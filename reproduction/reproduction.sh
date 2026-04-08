@@ -49,7 +49,7 @@ VIDEO_NAME="${VIDEO_NAME%.*}"
 VIDEO_DIR="${INPUTS_DIR}/${VIDEO_NAME}"
 OLD_MASK_DIR="${INPUTS_DIR}/${VIDEO_NAME}_mask"
 
-OUTPUTS_DIR="${ROOT_DIR}/outputs"
+OUTPUTS_DIR="${ROOT_DIR}/outputs/reproduction/${VIDEO_NAME}"
 TMP_INPUT_MASK_DIR="${OUTPUTS_DIR}/tmp_sam2_input_masks"
 TMP_RAW_MASK_DIR="${OUTPUTS_DIR}/tmp_sam2_masks_raw"
 NEW_MASK_DIR="${OUTPUTS_DIR}/${VIDEO_NAME}_mask_sam2"
@@ -62,6 +62,8 @@ INPAINT_5_DIR="${VIS_ROOT}/inpaint_5frames"
 PROPAINTER_OUT_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_propainter"
 
 VIDEO_LIST_FILE="${INPUTS_DIR}/video_completion/bmx_video_list.txt"
+
+mkdir -p "${OUTPUTS_DIR}"
 
 echo "[1/7] Preprocessing video (split frames + first-frame YOLO mask) in conda env: ${YOLO_ENV}"
 cd "${ROOT_DIR}"
@@ -94,6 +96,7 @@ echo "[4/7] Converting SAM2 masks to ProPainter binary mask format (0/255, L mod
 cd "${ROOT_DIR}"
 conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/reproduction/sam2_postprocess.py" \
     --root_dir "${ROOT_DIR}" \
+  --output_root "${OUTPUTS_DIR}" \
     --video_name "${VIDEO_NAME}"
 
 echo "[5/7] Rendering 5 SAM2 segmentation demo images..."
@@ -109,15 +112,31 @@ fi
 
 echo "[7/8] Running ProPainter inpainting in conda env: ${PROPAINTER_ENV}"
 cd "${PROPAINTER_DIR}"
+# Reduce CUDA fragmentation and peak memory during long-video inference.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:128}"
+
+# Low-memory defaults (can be overridden by exporting these vars before running script).
+PROPAINTER_RESIZE_RATIO="${PROPAINTER_RESIZE_RATIO:-0.75}"
+PROPAINTER_SUBVIDEO_LENGTH="${PROPAINTER_SUBVIDEO_LENGTH:-40}"
+PROPAINTER_NEIGHBOR_LENGTH="${PROPAINTER_NEIGHBOR_LENGTH:-8}"
+PROPAINTER_RAFT_ITER="${PROPAINTER_RAFT_ITER:-12}"
+
+echo "      resize_ratio=${PROPAINTER_RESIZE_RATIO}, subvideo_length=${PROPAINTER_SUBVIDEO_LENGTH}, neighbor_length=${PROPAINTER_NEIGHBOR_LENGTH}, raft_iter=${PROPAINTER_RAFT_ITER}, fp16=on"
 conda run -n "${PROPAINTER_ENV}" python inference_propainter.py \
   --video "../inputs/${VIDEO_NAME}" \
-  --mask "../outputs/${VIDEO_NAME}_mask_sam2" \
-  --output "../outputs/${VIDEO_NAME}_propainter" \
+  --mask "../outputs/reproduction/${VIDEO_NAME}/${VIDEO_NAME}_mask_sam2" \
+  --output "../outputs/reproduction/${VIDEO_NAME}/${VIDEO_NAME}_propainter" \
+  --resize_ratio "${PROPAINTER_RESIZE_RATIO}" \
+  --subvideo_length "${PROPAINTER_SUBVIDEO_LENGTH}" \
+  --neighbor_length "${PROPAINTER_NEIGHBOR_LENGTH}" \
+  --raft_iter "${PROPAINTER_RAFT_ITER}" \
+  --fp16 \
   --save_frames
 
 echo "[8/8] Exporting 5 final inpainted frames..."
 conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/reproduction/sam2_postprocess.py" \
     --root_dir "${ROOT_DIR}" \
+  --output_root "${OUTPUTS_DIR}" \
     --video_name "${VIDEO_NAME}"
 
 echo "Done. Outputs:"

@@ -87,18 +87,20 @@ def export_inpaint_5(frame_dir: str, out_dir: str, num: int = 5) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--root_dir', required=True)
+    parser.add_argument('--output_root', default='')
     parser.add_argument('--video_name', default='bmx-trees')
     args = parser.parse_args()
 
     root = args.root_dir
     video = args.video_name
+    output_root = args.output_root if args.output_root else os.path.join(root, 'outputs')
 
-    raw_mask_dir = os.path.join(root, 'outputs', 'tmp_sam2_masks_raw', video)
-    new_mask_dir = os.path.join(root, 'outputs', f'{video}_mask_sam2')
+    raw_mask_dir = os.path.join(output_root, 'tmp_sam2_masks_raw', video)
+    new_mask_dir = os.path.join(output_root, f'{video}_mask_sam2')
     frame_dir = os.path.join(root, 'inputs', video)
     old_mask_dir = os.path.join(root, 'inputs', f'{video}_mask')
 
-    vis_root = os.path.join(root, 'outputs', f'{video}_sam2_vis')
+    vis_root = os.path.join(output_root, f'{video}_sam2_vis')
     seg_demo_dir = os.path.join(vis_root, 'seg_demo')
     compare_dir = os.path.join(vis_root, 'mask_compare')
     inpaint_5_dir = os.path.join(vis_root, 'inpaint_5frames')
@@ -107,7 +109,7 @@ def main() -> None:
     render_seg_demo(frame_dir, new_mask_dir, seg_demo_dir, num=5)
     render_mask_compare(old_mask_dir, new_mask_dir, compare_dir, num=5)
 
-    inpaint_frames_dir = os.path.join(root, 'outputs', f'{video}_propainter', video, 'frames')
+    inpaint_frames_dir = os.path.join(output_root, f'{video}_propainter', video, 'frames')
     if os.path.isdir(inpaint_frames_dir):
         export_inpaint_5(inpaint_frames_dir, inpaint_5_dir, num=5)
 
