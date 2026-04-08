@@ -1,0 +1,4 @@
+.vscode/
+videos/
+outputs/
+*__pycache__/
