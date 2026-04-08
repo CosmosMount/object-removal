@@ -1,0 +1,6 @@
+[submodule "sam2"]
+	path = sam2
+	url = git@github.com:CosmosMount/sam2.git
+[submodule "ProPainter"]
+	path = ProPainter
+	url = git@github.com:CosmosMount/ProPainter.git
