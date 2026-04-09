@@ -89,6 +89,8 @@ def main() -> None:
     parser.add_argument('--root_dir', required=True)
     parser.add_argument('--output_root', default='')
     parser.add_argument('--video_name', default='bmx-trees')
+    parser.add_argument('--frame_dir', default='')
+    parser.add_argument('--old_mask_dir', default='')
     args = parser.parse_args()
 
     root = args.root_dir
@@ -97,8 +99,8 @@ def main() -> None:
 
     raw_mask_dir = os.path.join(output_root, 'tmp_sam2_masks_raw', video)
     new_mask_dir = os.path.join(output_root, f'{video}_mask_sam2')
-    frame_dir = os.path.join(root, 'inputs', video)
-    old_mask_dir = os.path.join(root, 'inputs', f'{video}_mask')
+    frame_dir = args.frame_dir if args.frame_dir else os.path.join(root, 'inputs', video)
+    old_mask_dir = args.old_mask_dir if args.old_mask_dir else os.path.join(root, 'inputs', f'{video}_mask')
 
     vis_root = os.path.join(output_root, f'{video}_sam2_vis')
     seg_demo_dir = os.path.join(vis_root, 'seg_demo')
