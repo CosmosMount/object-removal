@@ -4,3 +4,6 @@
 [submodule "ProPainter"]
 	path = ProPainter
 	url = git@github.com:CosmosMount/ProPainter.git
+[submodule "davis2017-evaluation"]
+	path = davis2017-evaluation
+	url = git@github.com:CosmosMount/davis2017-evaluation.git
