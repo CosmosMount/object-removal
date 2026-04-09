@@ -56,19 +56,31 @@ def split_video_to_frames(video_path: str, frame_dir: str) -> tuple[np.ndarray, 
 
 
 def build_first_mask(frame: np.ndarray, classes: list[int], model_path: str) -> np.ndarray:
-	from ultralytics import YOLO
+    from ultralytics import YOLO
 
-	model = YOLO(model_path)
-	h, w = frame.shape[:2]
-	result = model(frame, classes=classes, verbose=False)[0]
+    model = YOLO(model_path)
+    h, w = frame.shape[:2]
+    
+    # 建议加上 conf=0.5 参数来过滤低置信度噪点
+    result = model(frame, classes=classes, conf=0.5, verbose=False)[0]
 
-	mask = np.zeros((h, w), dtype=np.uint8)
-	if result.masks is not None:
-		for seg in result.masks.data:
-			seg_map = seg.cpu().numpy()
-			seg_map = cv2.resize(seg_map, (w, h), interpolation=cv2.INTER_NEAREST)
-			mask = np.maximum(mask, (seg_map > 0.5).astype(np.uint8) * 255)
-	return mask
+    # 创建一个与原图尺寸相同、单通道的全黑背景图片 (数据类型必须是 uint8)
+    img = np.zeros((h, w), dtype=np.uint8)
+
+    # 提取所有目标的边界框，并将它们作为实心白色矩形画在黑底上
+    if result.boxes is not None and len(result.boxes) > 0:
+        for box in result.boxes:
+            # 获取边界框坐标 (x_min, y_min, x_max, y_max)
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            
+            # OpenCV 画图需要坐标为整数
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            
+            # 在 img 上画实心矩形：颜色 255 (纯白), 线宽 -1 (表示填充实心)
+            cv2.rectangle(img, (x1, y1), (x2, y2), 255, -1)
+            
+    # 返回这张绘制好的图像
+    return img
 
 
 def main() -> None:
