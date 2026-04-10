@@ -7,3 +7,6 @@
 [submodule "davis2017-evaluation"]
 	path = davis2017-evaluation
 	url = git@github.com:CosmosMount/davis2017-evaluation.git
+[submodule "VGGT4D"]
+	path = VGGT4D
+	url = git@github.com:CosmosMount/VGGT4D.git
