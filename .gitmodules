@@ -10,3 +10,6 @@
 [submodule "VGGT4D"]
 	path = VGGT4D
 	url = git@github.com:CosmosMount/VGGT4D.git
+[submodule "sam3"]
+	path = sam3
+	url = git@github.com:CosmosMount/sam3.git
