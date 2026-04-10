@@ -13,10 +13,10 @@ DAVIS_PALETTE = b"\x00\x00\x00\x80\x00\x00\x00\x80\x00\x80\x80\x00\x00\x00\x80\x
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="SAM3 VOS inference with first-frame mask prompt.")
+    parser = argparse.ArgumentParser(description="SAM3 VOS inference with init mask prompt.")
     parser.add_argument("--sam3_checkpoint", required=True, help="Local SAM3 checkpoint path.")
     parser.add_argument("--base_video_dir", required=True, help="Root dir containing frame folders for each video.")
-    parser.add_argument("--input_mask_dir", required=True, help="Input first-frame indexed masks dir.")
+    parser.add_argument("--input_mask_dir", required=True, help="Input init indexed masks dir.")
     parser.add_argument("--output_mask_dir", required=True, help="Output propagated indexed masks dir.")
     parser.add_argument("--video_list_file", default=None, help="Optional txt with one video name per line.")
     parser.add_argument("--score_thresh", type=float, default=0.0, help="Threshold on SAM3 logits.")
@@ -53,17 +53,33 @@ def list_frame_names(video_dir: str) -> List[str]:
     return names
 
 
-def resolve_first_mask_path(input_mask_dir: str, video_name: str, frame_name: str) -> str:
-    preferred = os.path.join(input_mask_dir, video_name, f"{frame_name}.png")
-    if os.path.isfile(preferred):
-        return preferred
-    fallback = os.path.join(input_mask_dir, video_name, "00000.png")
-    if os.path.isfile(fallback):
-        return fallback
-    raise FileNotFoundError(
-        f"Cannot find first-frame mask in {os.path.join(input_mask_dir, video_name)}; "
-        f"checked {frame_name}.png and 00000.png"
+def resolve_init_mask_path(input_mask_dir: str, video_name: str) -> str:
+    video_mask_dir = os.path.join(input_mask_dir, video_name)
+    if not os.path.isdir(video_mask_dir):
+        raise FileNotFoundError(f"Input mask dir not found: {video_mask_dir}")
+
+    pngs = sorted(
+        [p for p in os.listdir(video_mask_dir) if p.lower().endswith(".png")],
+        key=lambda n: int(os.path.splitext(n)[0]) if os.path.splitext(n)[0].isdigit() else n,
     )
+    if not pngs:
+        raise FileNotFoundError(f"No init masks found in {video_mask_dir}")
+
+    best_path = None
+    best_area = -1
+    for name in pngs:
+        path = os.path.join(video_mask_dir, name)
+        arr = np.array(Image.open(path))
+        if arr.ndim > 2:
+            arr = arr[..., 0]
+        area = int((arr > 0).sum())
+        if area > best_area:
+            best_area = area
+            best_path = path
+
+    if best_path is None:
+        raise RuntimeError(f"Failed to select an init mask from {video_mask_dir}")
+    return best_path
 
 
 def run_one_video(
@@ -82,10 +98,19 @@ def run_one_video(
     if not frame_names:
         raise RuntimeError(f"No frames found in {video_dir}")
 
-    first_mask_path = resolve_first_mask_path(input_mask_dir, video_name, frame_names[0])
-    first_mask, object_ids, palette = load_mask(first_mask_path)
+    init_mask_path = resolve_init_mask_path(input_mask_dir, video_name)
+    init_frame_name = os.path.splitext(os.path.basename(init_mask_path))[0]
+    if init_frame_name not in frame_names:
+        raise RuntimeError(
+            f"Init mask frame {init_frame_name}.png not found in video frames for {video_name}"
+        )
+    init_frame_idx = frame_names.index(init_frame_name)
+
+    first_mask, object_ids, palette = load_mask(init_mask_path)
     if len(object_ids) == 0:
-        raise RuntimeError(f"No foreground object in first-frame mask: {first_mask_path}")
+        raise RuntimeError(f"No foreground object in init mask: {init_mask_path}")
+
+    print(f"[sam3] init frame for {video_name}: {init_frame_name} (idx={init_frame_idx})")
 
     inference_state = predictor.init_state(video_path=video_dir, async_loading_frames=False)
     video_h = int(inference_state["video_height"])
@@ -98,23 +123,24 @@ def run_one_video(
         obj_mask = torch.from_numpy(first_mask == obj_id)
         predictor.add_new_mask(
             inference_state=inference_state,
-            frame_idx=0,
+            frame_idx=init_frame_idx,
             obj_id=int(obj_id),
             mask=obj_mask,
         )
 
     outputs: Dict[int, Dict[int, np.ndarray]] = {}
-    for out_frame_idx, out_obj_ids, _, out_video_res_masks, _ in predictor.propagate_in_video(
-        inference_state=inference_state,
-        start_frame_idx=0,
-        max_frame_num_to_track=len(frame_names),
-        reverse=False,
-        propagate_preflight=True,
-    ):
-        per_obj = {}
-        for i, out_obj_id in enumerate(out_obj_ids):
-            per_obj[int(out_obj_id)] = (out_video_res_masks[i] > score_thresh).cpu().numpy()
-        outputs[int(out_frame_idx)] = per_obj
+    for reverse in (False, True):
+        for out_frame_idx, out_obj_ids, _, out_video_res_masks, _ in predictor.propagate_in_video(
+            inference_state=inference_state,
+            start_frame_idx=init_frame_idx,
+            max_frame_num_to_track=len(frame_names),
+            reverse=reverse,
+            propagate_preflight=(not reverse),
+        ):
+            per_obj = {}
+            for i, out_obj_id in enumerate(out_obj_ids):
+                per_obj[int(out_obj_id)] = (out_video_res_masks[i] > score_thresh).cpu().numpy()
+            outputs[int(out_frame_idx)] = per_obj
 
     save_dir = os.path.join(output_mask_dir, video_name)
     os.makedirs(save_dir, exist_ok=True)

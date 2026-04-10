@@ -256,18 +256,19 @@ if [[ ! -d "${VGGT_SCENE_OUTPUT}" ]]; then
 	exit 1
 fi
 
-echo "[4/9] Building first-frame indexed mask from VGGT4D output"
+echo "[4/9] Building max-area indexed init mask from VGGT4D output"
 rm -rf "${TMP_INPUT_MASK_DIR}"
 mkdir -p "${TMP_INPUT_MASK_DIR}/${VIDEO_NAME}"
-FIRST_MASK_PATH="${TMP_INPUT_MASK_DIR}/${VIDEO_NAME}/00000.png"
+INIT_MASK_DIR="${TMP_INPUT_MASK_DIR}/${VIDEO_NAME}"
 cd "${ROOT_DIR}"
 conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/reproduction_vggtsam3/gen_first_mask_from_vggt.py" \
 	--vggt_scene_output "${VGGT_SCENE_OUTPUT}" \
-	--output_mask "${FIRST_MASK_PATH}" \
+	--output_dir "${INIT_MASK_DIR}" \
 	--threshold 0
 
-if [[ ! -f "${FIRST_MASK_PATH}" ]]; then
-	echo "ERROR: first-frame mask was not created: ${FIRST_MASK_PATH}"
+INIT_MASK_COUNT="$(find "${INIT_MASK_DIR}" -maxdepth 1 -type f -name '*.png' | wc -l | tr -d ' ')"
+if [[ "${INIT_MASK_COUNT}" == "0" ]]; then
+	echo "ERROR: init mask was not created in ${INIT_MASK_DIR}"
 	exit 1
 fi
 
