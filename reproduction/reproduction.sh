@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SAM2_ENV="${SAM2_ENV:-sam2}"
-PROPAINTER_ENV="${PROPAINTER_ENV:-sam3d-objects}"
+PROPAINTER_ENV="${PROPAINTER_ENV:-propainter}"
 YOLO_ENV="${YOLO_ENV:-sam2}"
 DAVIS_ENV="${DAVIS_ENV:-davis}"
 export ROOT_DIR
@@ -163,38 +163,14 @@ else
     exit 1
   fi
 
-  FIRST_MASK_SCRIPT="${OUTPUTS_DIR}/_gen_first_mask.py"
-  cat > "${FIRST_MASK_SCRIPT}" <<'PY'
-import cv2
-import numpy as np
-import os
-from ultralytics import YOLO
-
-first_frame = os.environ["FIRST_FRAME"]
-root_dir = os.environ["ROOT_DIR"]
-first_mask_path = os.environ["FIRST_MASK_PATH"]
-
-frame = cv2.imread(first_frame)
-if frame is None:
-    raise RuntimeError(f"Cannot read frame: {first_frame}")
-
-h, w = frame.shape[:2]
-model_path = os.path.join(root_dir, "baseline", "yolov8n-seg.pt")
-model = YOLO(model_path)
-res = model(frame, classes=[0, 1, 2, 3, 5, 7], conf=0.5, verbose=False)[0]
-mask = np.zeros((h, w), dtype=np.uint8)
-if res.boxes is not None and len(res.boxes) > 0:
-    for box in res.boxes:
-        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
-ok = cv2.imwrite(first_mask_path, mask)
-if not ok:
-    raise RuntimeError(f"Failed to write first-frame mask to: {first_mask_path}")
-print(f"Saved first-frame mask: {first_mask_path}")
-PY
-  FIRST_FRAME="${FIRST_FRAME}" ROOT_DIR="${ROOT_DIR}" FIRST_MASK_PATH="${FIRST_MASK_PATH}" \
-    conda run -n "${YOLO_ENV}" python "${FIRST_MASK_SCRIPT}"
-  rm -f "${FIRST_MASK_SCRIPT}"
+  FIRST_MASK_SCRIPT="${ROOT_DIR}/reproduction/gen_first_mask.py"
+  conda run -n "${YOLO_ENV}" python "${FIRST_MASK_SCRIPT}" \
+    --first_frame "${FIRST_FRAME}" \
+    --model_path "${ROOT_DIR}/baseline/yolov8n-seg.pt" \
+    --output_mask "${FIRST_MASK_PATH}" \
+    --conf 0.25 \
+    --max_init_objects 4 \
+    --classes "0,1,2,3,5,7"
 
   if [[ ! -f "${FIRST_MASK_PATH}" ]]; then
     echo "ERROR: first-frame mask was not created: ${FIRST_MASK_PATH}"
@@ -246,16 +222,23 @@ fi
 
 echo "[7/8] Running ProPainter inpainting in conda env: ${PROPAINTER_ENV}"
 cd "${PROPAINTER_DIR}"
-# Reduce CUDA fragmentation and peak memory during long-video inference.
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:128}"
+# Use a conservative allocator config for torch 2.4.x to avoid
+# expandable_segments internal asserts on some CUDA drivers.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128,garbage_collection_threshold:0.8}"
 
 # Low-memory defaults (can be overridden by exporting these vars before running script).
 PROPAINTER_RESIZE_RATIO="${PROPAINTER_RESIZE_RATIO:-0.75}"
 PROPAINTER_SUBVIDEO_LENGTH="${PROPAINTER_SUBVIDEO_LENGTH:-40}"
 PROPAINTER_NEIGHBOR_LENGTH="${PROPAINTER_NEIGHBOR_LENGTH:-8}"
 PROPAINTER_RAFT_ITER="${PROPAINTER_RAFT_ITER:-12}"
+PROPAINTER_FP16="${PROPAINTER_FP16:-1}"
 
-echo "      resize_ratio=${PROPAINTER_RESIZE_RATIO}, subvideo_length=${PROPAINTER_SUBVIDEO_LENGTH}, neighbor_length=${PROPAINTER_NEIGHBOR_LENGTH}, raft_iter=${PROPAINTER_RAFT_ITER}, fp16=on"
+FP16_FLAG=""
+if [[ "${PROPAINTER_FP16}" == "1" ]]; then
+  FP16_FLAG="--fp16"
+fi
+
+echo "      resize_ratio=${PROPAINTER_RESIZE_RATIO}, subvideo_length=${PROPAINTER_SUBVIDEO_LENGTH}, neighbor_length=${PROPAINTER_NEIGHBOR_LENGTH}, raft_iter=${PROPAINTER_RAFT_ITER}, fp16=${PROPAINTER_FP16}, alloc_conf=${PYTORCH_CUDA_ALLOC_CONF}"
 conda run -n "${PROPAINTER_ENV}" python inference_propainter.py \
   --video "${VIDEO_DIR}" \
   --mask "${NEW_MASK_DIR}" \
@@ -264,7 +247,7 @@ conda run -n "${PROPAINTER_ENV}" python inference_propainter.py \
   --subvideo_length "${PROPAINTER_SUBVIDEO_LENGTH}" \
   --neighbor_length "${PROPAINTER_NEIGHBOR_LENGTH}" \
   --raft_iter "${PROPAINTER_RAFT_ITER}" \
-  --fp16 \
+  ${FP16_FLAG} \
   --save_frames
 
 echo "[8/8] Exporting 5 final inpainted frames..."
@@ -294,56 +277,11 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
     exit 1
   fi
 
-  DAVIS_CONVERT_SCRIPT="${OUTPUTS_DIR}/_prepare_davis_eval_masks.py"
-  cat > "${DAVIS_CONVERT_SCRIPT}" <<'PY'
-import os
-import numpy as np
-from PIL import Image
-
-src_dir = os.environ["SRC_DIR"]
-dst_dir = os.environ["DST_DIR"]
-max_eval_labels = int(os.environ.get("MAX_EVAL_LABELS", "20"))
-
-png_names = sorted([n for n in os.listdir(src_dir) if n.lower().endswith('.png')])
-if not png_names:
-    raise RuntimeError(f"No PNG masks found in source dir: {src_dir}")
-
-# Remap raw label values (e.g. 255) to compact ids 1..N so DAVIS eval doesn't allocate huge tensors.
-unique_labels = set()
-for name in png_names:
-    arr = np.array(Image.open(os.path.join(src_dir, name)))
-    if arr.ndim > 2:
-        arr = arr[..., 0]
-    vals = np.unique(arr)
-    unique_labels.update(int(v) for v in vals if int(v) > 0)
-
-sorted_labels = sorted(unique_labels)
-if len(sorted_labels) > max_eval_labels:
-    sorted_labels = sorted_labels[:max_eval_labels]
-
-label_map = {raw_v: i + 1 for i, raw_v in enumerate(sorted_labels)}
-
-os.makedirs(dst_dir, exist_ok=True)
-for name in png_names:
-    arr = np.array(Image.open(os.path.join(src_dir, name)))
-    if arr.ndim > 2:
-        arr = arr[..., 0]
-    out = np.zeros(arr.shape, dtype=np.uint8)
-    for raw_v, mapped_v in label_map.items():
-        out[arr == raw_v] = mapped_v
-    Image.fromarray(out, mode='L').save(os.path.join(dst_dir, name))
-
-# DAVIS eval expects indexed PNGs to include the initial frame id (typically 00000).
-if not os.path.isfile(os.path.join(dst_dir, '00000.png')):
-    pngs = sorted([x for x in os.listdir(dst_dir) if x.lower().endswith('.png')])
-    if pngs:
-        Image.open(os.path.join(dst_dir, pngs[0])).save(os.path.join(dst_dir, '00000.png'))
-
-print(f"Prepared DAVIS masks in: {dst_dir}; mapped_labels={len(label_map)}")
-PY
-  SRC_DIR="${EVAL_MASK_SRC_DIR}" DST_DIR="${DAVIS_EVAL_SEQ_DIR}" MAX_EVAL_LABELS="20" \
-    conda run -n "${PROPAINTER_ENV}" python "${DAVIS_CONVERT_SCRIPT}"
-  rm -f "${DAVIS_CONVERT_SCRIPT}"
+    DAVIS_CONVERT_SCRIPT="${ROOT_DIR}/reproduction/prepare_davis_eval_masks.py"
+    conda run -n "${PROPAINTER_ENV}" python "${DAVIS_CONVERT_SCRIPT}" \
+    --src_dir "${EVAL_MASK_SRC_DIR}" \
+    --dst_dir "${DAVIS_EVAL_SEQ_DIR}" \
+    --max_eval_labels 20
 
   if [[ ! -f "${DAVIS_EVAL_SEQ_DIR}/00000.png" ]]; then
     echo "ERROR: failed to prepare DAVIS eval masks; missing ${DAVIS_EVAL_SEQ_DIR}/00000.png"
