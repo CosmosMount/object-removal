@@ -153,7 +153,7 @@ if [[ "${MODE}" == "video" ]]; then
 	if [[ ! -d "${VIDEO_DIR}" ]]; then
 		echo "[1/9] Splitting input video into frames in conda env: ${PREPROCESS_ENV}"
 		cd "${ROOT_DIR}"
-		conda run -n "${PREPROCESS_ENV}" python "${ROOT_DIR}/reproduction/sam2_preprocess.py" \
+		conda run -n "${PREPROCESS_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/sam2_preprocess.py" \
 			--root_dir "${ROOT_DIR}" \
 			--video "${VIDEO_PATH}"
 	fi
@@ -164,92 +164,80 @@ rm -rf "${VGGT_INPUT_ROOT}"
 mkdir -p "${VGGT_INPUT_ROOT}"
 ln -s "${VIDEO_DIR}" "${VGGT_SCENE_INPUT}"
 
-echo "[3/9] Running VGGT4D dynamic mask extraction in conda env: ${VGGT_ENV}"
-cd "${VGGT_DIR}"
-VGGT_CHUNK_SIZE="${VGGT_CHUNK_SIZE:-20}"
-VGGT_FORCE_CHUNK="${VGGT_FORCE_CHUNK:-1}"
+echo "[3/9] Running VGGT4D dynamic mask extraction (first 20 frames) in conda env: ${VGGT_ENV}"
+cd "${ROOT_DIR}"
 
-if [[ "${VGGT_FORCE_CHUNK}" == "1" ]]; then
-	FULL_RUN_OK=0
-else
-	if conda run -n "${VGGT_ENV}" python demo_vggt4d.py \
-		--input_dir "${VGGT_INPUT_ROOT}" \
-		--output_dir "${VGGT_OUTPUT_ROOT}"; then
-		FULL_RUN_OK=1
-	else
-		FULL_RUN_OK=0
-	fi
+FRAME_LIST=( $(find "${VIDEO_DIR}" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.jpeg' -o -name '*.png' \) | sort) )
+N_FRAMES="${#FRAME_LIST[@]}"
+if [[ "${N_FRAMES}" -eq 0 ]]; then
+	echo "ERROR: no frames found in ${VIDEO_DIR}"
+	exit 1
 fi
 
-if [[ "${FULL_RUN_OK}" != "1" ]]; then
-	echo "WARN: Full-sequence VGGT4D run failed or was skipped. Falling back to chunked inference."
-	cd "${ROOT_DIR}"
+VGGT_MAX_FRAMES="${VGGT_MAX_FRAMES:-20}"
+if [[ "${N_FRAMES}" -gt "${VGGT_MAX_FRAMES}" ]]; then
+	N_FRAMES="${VGGT_MAX_FRAMES}"
+	FRAME_LIST=("${FRAME_LIST[@]:0:${VGGT_MAX_FRAMES}}")
+fi
 
-	FRAME_LIST=( $(find "${VIDEO_DIR}" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.jpeg' -o -name '*.png' \) | sort) )
-	N_FRAMES="${#FRAME_LIST[@]}"
-	if [[ "${N_FRAMES}" -eq 0 ]]; then
-		echo "ERROR: no frames found in ${VIDEO_DIR}"
+rm -rf "${VGGT_OUTPUT_ROOT}" "${OUTPUTS_DIR}/vggt_chunks"
+mkdir -p "${VGGT_SCENE_OUTPUT}"
+
+VGGT_CHUNK_SIZE="${VGGT_CHUNK_SIZE:-20}"
+START=0
+while [[ "${START}" -lt "${N_FRAMES}" ]]; do
+	END=$((START + VGGT_CHUNK_SIZE))
+	if [[ "${END}" -gt "${N_FRAMES}" ]]; then
+		END="${N_FRAMES}"
+	fi
+
+	CHUNK_TAG="${START}_${END}"
+	CHUNK_ROOT="${OUTPUTS_DIR}/vggt_chunks/chunk_${CHUNK_TAG}"
+	CHUNK_INPUT_ROOT="${CHUNK_ROOT}/input"
+	CHUNK_SCENE_INPUT="${CHUNK_INPUT_ROOT}/${VIDEO_NAME}"
+	CHUNK_OUTPUT_ROOT="${CHUNK_ROOT}/output"
+	CHUNK_SCENE_OUTPUT="${CHUNK_OUTPUT_ROOT}/${VIDEO_NAME}"
+
+	mkdir -p "${CHUNK_SCENE_INPUT}"
+
+	I="${START}"
+	while [[ "${I}" -lt "${END}" ]]; do
+		FRAME_PATH="${FRAME_LIST[${I}]}"
+		FRAME_NAME="$(basename "${FRAME_PATH}")"
+		ln -s "${FRAME_PATH}" "${CHUNK_SCENE_INPUT}/${FRAME_NAME}"
+		I=$((I + 1))
+	done
+
+	echo "  Chunk ${START}:${END}"
+	cd "${VGGT_DIR}"
+	conda run -n "${VGGT_ENV}" python demo_vggt4d.py \
+		--input_dir "${CHUNK_INPUT_ROOT}" \
+		--output_dir "${CHUNK_OUTPUT_ROOT}"
+
+	if [[ ! -d "${CHUNK_SCENE_OUTPUT}" ]]; then
+		echo "ERROR: missing chunk output dir: ${CHUNK_SCENE_OUTPUT}"
 		exit 1
 	fi
 
-	rm -rf "${VGGT_OUTPUT_ROOT}" "${OUTPUTS_DIR}/vggt_chunks"
-	mkdir -p "${VGGT_SCENE_OUTPUT}"
+	LOCAL_MASKS=( $(find "${CHUNK_SCENE_OUTPUT}" -maxdepth 1 -type f -name 'dynamic_mask_*.png' | sort) )
+	LOCAL_N="${#LOCAL_MASKS[@]}"
+	EXPECTED_N=$((END - START))
+	if [[ "${LOCAL_N}" -ne "${EXPECTED_N}" ]]; then
+		echo "ERROR: chunk mask count mismatch for ${CHUNK_TAG}: got ${LOCAL_N}, expected ${EXPECTED_N}"
+		exit 1
+	fi
 
-	START=0
-	while [[ "${START}" -lt "${N_FRAMES}" ]]; do
-		END=$((START + VGGT_CHUNK_SIZE))
-		if [[ "${END}" -gt "${N_FRAMES}" ]]; then
-			END="${N_FRAMES}"
-		fi
-
-		CHUNK_TAG="${START}_${END}"
-		CHUNK_ROOT="${OUTPUTS_DIR}/vggt_chunks/chunk_${CHUNK_TAG}"
-		CHUNK_INPUT_ROOT="${CHUNK_ROOT}/input"
-		CHUNK_SCENE_INPUT="${CHUNK_INPUT_ROOT}/${VIDEO_NAME}"
-		CHUNK_OUTPUT_ROOT="${CHUNK_ROOT}/output"
-		CHUNK_SCENE_OUTPUT="${CHUNK_OUTPUT_ROOT}/${VIDEO_NAME}"
-
-		mkdir -p "${CHUNK_SCENE_INPUT}"
-
-		I="${START}"
-		while [[ "${I}" -lt "${END}" ]]; do
-			FRAME_PATH="${FRAME_LIST[${I}]}"
-			FRAME_NAME="$(basename "${FRAME_PATH}")"
-			ln -s "${FRAME_PATH}" "${CHUNK_SCENE_INPUT}/${FRAME_NAME}"
-			I=$((I + 1))
-		done
-
-		echo "  Chunk ${START}:${END}"
-		cd "${VGGT_DIR}"
-		conda run -n "${VGGT_ENV}" python demo_vggt4d.py \
-			--input_dir "${CHUNK_INPUT_ROOT}" \
-			--output_dir "${CHUNK_OUTPUT_ROOT}"
-
-		if [[ ! -d "${CHUNK_SCENE_OUTPUT}" ]]; then
-			echo "ERROR: missing chunk output dir: ${CHUNK_SCENE_OUTPUT}"
-			exit 1
-		fi
-
-		LOCAL_MASKS=( $(find "${CHUNK_SCENE_OUTPUT}" -maxdepth 1 -type f -name 'dynamic_mask_*.png' | sort) )
-		LOCAL_N="${#LOCAL_MASKS[@]}"
-		EXPECTED_N=$((END - START))
-		if [[ "${LOCAL_N}" -ne "${EXPECTED_N}" ]]; then
-			echo "ERROR: chunk mask count mismatch for ${CHUNK_TAG}: got ${LOCAL_N}, expected ${EXPECTED_N}"
-			exit 1
-		fi
-
-		J=0
-		while [[ "${J}" -lt "${LOCAL_N}" ]]; do
-			GLOBAL_IDX=$((START + J))
-			cp -f "${LOCAL_MASKS[${J}]}" "${VGGT_SCENE_OUTPUT}/dynamic_mask_$(printf '%04d' "${GLOBAL_IDX}").png"
-			J=$((J + 1))
-		done
-
-		START="${END}"
+	J=0
+	while [[ "${J}" -lt "${LOCAL_N}" ]]; do
+		GLOBAL_IDX=$((START + J))
+		cp -f "${LOCAL_MASKS[${J}]}" "${VGGT_SCENE_OUTPUT}/dynamic_mask_$(printf '%04d' "${GLOBAL_IDX}").png"
+		J=$((J + 1))
 	done
 
-	echo "VGGT4D chunked inference finished."
-fi
+	START="${END}"
+done
+
+echo "VGGT4D chunked inference finished (${N_FRAMES} frames)."
 
 if [[ ! -d "${VGGT_SCENE_OUTPUT}" ]]; then
 	echo "ERROR: VGGT4D output scene not found: ${VGGT_SCENE_OUTPUT}"
@@ -261,7 +249,7 @@ rm -rf "${TMP_INPUT_MASK_DIR}"
 mkdir -p "${TMP_INPUT_MASK_DIR}/${VIDEO_NAME}"
 INIT_MASK_DIR="${TMP_INPUT_MASK_DIR}/${VIDEO_NAME}"
 cd "${ROOT_DIR}"
-conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/reproduction_vggtsam3/gen_first_mask_from_vggt.py" \
+conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/gen_first_mask_from_vggt.py" \
 	--vggt_scene_output "${VGGT_SCENE_OUTPUT}" \
 	--output_dir "${INIT_MASK_DIR}" \
 	--threshold 0
@@ -277,7 +265,7 @@ printf "%s\n" "${VIDEO_NAME}" > "${VIDEO_LIST_FILE}"
 rm -rf "${TMP_RAW_MASK_DIR}"
 mkdir -p "${TMP_RAW_MASK_DIR}"
 cd "${ROOT_DIR}"
-conda run -n "${SAM3_ENV}" python "${ROOT_DIR}/reproduction_vggtsam3/sam3_vos_inference.py" \
+conda run -n "${SAM3_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/sam3_vos_inference.py" \
 	--sam3_checkpoint "${SAM3_CHECKPOINT}" \
 	--base_video_dir "${SAM3_BASE_VIDEO_DIR}" \
 	--input_mask_dir "${TMP_INPUT_MASK_DIR}" \
@@ -292,7 +280,7 @@ if [[ ! -d "${RAW_SEQ_DIR}" ]]; then
 fi
 
 echo "[6/9] Converting SAM3 masks and rendering demos"
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/reproduction_vggtsam3/postprocess_sam3.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/postprocess_sam3.py" \
 	--raw_mask_dir "${RAW_SEQ_DIR}" \
 	--new_mask_dir "${NEW_MASK_DIR}" \
 	--frame_dir "${VIDEO_DIR}" \
@@ -336,7 +324,7 @@ conda run -n "${PROPAINTER_ENV}" python inference_propainter.py \
 
 echo "[8/9] Exporting inpaint samples"
 cd "${ROOT_DIR}"
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/reproduction_vggtsam3/postprocess_sam3.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/postprocess_sam3.py" \
 	--raw_mask_dir "${RAW_SEQ_DIR}" \
 	--new_mask_dir "${NEW_MASK_DIR}" \
 	--frame_dir "${VIDEO_DIR}" \
@@ -366,7 +354,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 		exit 1
 	fi
 
-	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/reproduction/prepare_davis_eval_masks.py" \
+	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/prepare_davis_eval_masks.py" \
 		--src_dir "${EVAL_MASK_SRC_DIR}" \
 		--dst_dir "${DAVIS_EVAL_SEQ_DIR}" \
 		--max_eval_labels 20

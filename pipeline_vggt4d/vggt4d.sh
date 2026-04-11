@@ -135,7 +135,7 @@ if [[ "${MODE}" == "video" ]]; then
 	if [[ ! -d "${VIDEO_DIR}" ]]; then
 		echo "[1/7] Splitting input video into frames in conda env: ${PREPROCESS_ENV}"
 		cd "${ROOT_DIR}"
-		conda run -n "${PREPROCESS_ENV}" python "${ROOT_DIR}/reproduction/sam2_preprocess.py" \
+		conda run -n "${PREPROCESS_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/sam2_preprocess.py" \
 			--root_dir "${ROOT_DIR}" \
 			--video "${VIDEO_PATH}"
 	fi
@@ -149,7 +149,7 @@ ln -s "${VIDEO_DIR}" "${VGGT_SCENE_INPUT}"
 echo "[3/7] Running VGGT4D dynamic mask extraction in conda env: ${VGGT_ENV}"
 cd "${VGGT_DIR}"
 VGGT_CHUNK_SIZE="${VGGT_CHUNK_SIZE:-20}"
-if conda run -n "${VGGT_ENV}" python demo_vggt4d.py \
+if false \
 	--input_dir "${VGGT_INPUT_ROOT}" \
 	--output_dir "${VGGT_OUTPUT_ROOT}"; then
 	echo "VGGT4D full-sequence inference finished."
@@ -230,14 +230,14 @@ fi
 
 echo "[4/7] Converting VGGT dynamic masks to ProPainter/DAVIS mask format"
 cd "${ROOT_DIR}"
-conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/reproduction_vggt/convert_vggt_masks.py" \
+conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/convert_vggt_masks.py" \
 	--src_dir "${VGGT_SCENE_OUTPUT}" \
 	--dst_dir "${NEW_MASK_DIR}" \
 	--frame_dir "${VIDEO_DIR}" \
 	--threshold 0
 
 echo "[5/7] Rendering mask demos"
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/reproduction_vggt/postprocess_vggt.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/postprocess_vggt.py" \
 	--frame_dir "${VIDEO_DIR}" \
 	--new_mask_dir "${NEW_MASK_DIR}" \
 	--old_mask_dir "${OLD_MASK_DIR}" \
@@ -280,7 +280,7 @@ conda run -n "${PROPAINTER_ENV}" python inference_propainter.py \
 
 echo "[7/7] Exporting inpaint samples and optional DAVIS eval"
 cd "${ROOT_DIR}"
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/reproduction_vggt/postprocess_vggt.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/postprocess_vggt.py" \
 	--frame_dir "${VIDEO_DIR}" \
 	--new_mask_dir "${NEW_MASK_DIR}" \
 	--old_mask_dir "${OLD_MASK_DIR}" \
@@ -299,7 +299,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 	mkdir -p "${DAVIS_EVAL_SEQ_DIR}"
 
 	VGGT_EVAL_TARGET_OBJECTS="${VGGT_EVAL_TARGET_OBJECTS:-2}"
-	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/reproduction_vggt/prepare_davis_eval_masks_multi.py" \
+	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/prepare_davis_eval_masks_multi.py" \
 		--src_dir "${NEW_MASK_DIR}" \
 		--dst_dir "${DAVIS_EVAL_SEQ_DIR}" \
 		--max_eval_labels 20 \

@@ -86,7 +86,7 @@ if [[ -n "${VIDEO_PATH}" ]]; then
   VIDEO_DIR="${INPUTS_DIR}/${VIDEO_NAME}"
   OLD_MASK_DIR="${INPUTS_DIR}/${VIDEO_NAME}_mask"
   SAM2_BASE_VIDEO_DIR="${INPUTS_DIR}"
-  OUTPUTS_DIR="${ROOT_DIR}/outputs/reproduction/${VIDEO_NAME}"
+  OUTPUTS_DIR="${ROOT_DIR}/outputs/yolosam2/${VIDEO_NAME}"
 else
   MODE="davis"
   VIDEO_NAME="${DAVIS_SEQ}"
@@ -149,7 +149,7 @@ mkdir -p "${OUTPUTS_DIR}"
 if [[ "${MODE}" == "video" ]]; then
   echo "[1/8] Preprocessing video (split frames + first-frame YOLO mask) in conda env: ${YOLO_ENV}"
   cd "${ROOT_DIR}"
-  conda run -n "${YOLO_ENV}" python "${ROOT_DIR}/reproduction/sam2_preprocess.py" \
+  conda run -n "${YOLO_ENV}" python "${ROOT_DIR}/pipeline_yolosam2/sam2_preprocess.py" \
     --root_dir "${ROOT_DIR}" \
     --video "${VIDEO_PATH}"
 else
@@ -163,7 +163,7 @@ else
     exit 1
   fi
 
-  FIRST_MASK_SCRIPT="${ROOT_DIR}/reproduction/gen_first_mask.py"
+  FIRST_MASK_SCRIPT="${ROOT_DIR}/pipeline_yolosam2/gen_first_mask.py"
   conda run -n "${YOLO_ENV}" python "${FIRST_MASK_SCRIPT}" \
     --first_frame "${FIRST_FRAME}" \
     --model_path "${ROOT_DIR}/baseline/yolov8n-seg.pt" \
@@ -202,7 +202,7 @@ conda run -n "${SAM2_ENV}" python tools/vos_inference.py \
 
 echo "[4/8] Converting SAM2 masks to ProPainter binary mask format (0/255, L mode)..."
 cd "${ROOT_DIR}"
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/reproduction/sam2_postprocess.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_yolosam2/sam2_postprocess.py" \
   --root_dir "${ROOT_DIR}" \
   --output_root "${OUTPUTS_DIR}" \
   --video_name "${VIDEO_NAME}" \
@@ -251,7 +251,7 @@ conda run -n "${PROPAINTER_ENV}" python inference_propainter.py \
   --save_frames
 
 echo "[8/8] Exporting 5 final inpainted frames..."
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/reproduction/sam2_postprocess.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_yolosam2/sam2_postprocess.py" \
   --root_dir "${ROOT_DIR}" \
   --output_root "${OUTPUTS_DIR}" \
   --video_name "${VIDEO_NAME}" \
@@ -277,7 +277,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
     exit 1
   fi
 
-    DAVIS_CONVERT_SCRIPT="${ROOT_DIR}/reproduction/prepare_davis_eval_masks.py"
+    DAVIS_CONVERT_SCRIPT="${ROOT_DIR}/pipeline_yolosam2/prepare_davis_eval_masks.py"
     conda run -n "${PROPAINTER_ENV}" python "${DAVIS_CONVERT_SCRIPT}" \
     --src_dir "${EVAL_MASK_SRC_DIR}" \
     --dst_dir "${DAVIS_EVAL_SEQ_DIR}" \
