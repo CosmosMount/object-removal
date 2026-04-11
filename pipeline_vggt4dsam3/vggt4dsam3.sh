@@ -51,11 +51,15 @@ while [[ $# -gt 0 ]]; do
 			DAVIS_TASK="$2"
 			shift 2
 			;;
+		--dyn_threshold_scale)
+			VGGT_THRESHOLD_SCALE="$2"
+			shift 2
+			;;
 		*)
 			echo "Unknown argument: $1"
 			echo "Usage:"
-			echo "  Video mode: $0 --video /path/to/video.mp4"
-			echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
+			echo "  Video mode: $0 --video /path/to/video.mp4 [--dyn_threshold_scale 0.7]"
+			echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised] [--dyn_threshold_scale 0.7]"
 			exit 1
 			;;
 	esac
@@ -63,8 +67,8 @@ done
 
 if [[ -z "${VIDEO_PATH}" && -z "${DAVIS_SEQ}" ]]; then
 	echo "Usage:"
-	echo "  Video mode: $0 --video /path/to/video.mp4"
-	echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
+	echo "  Video mode: $0 --video /path/to/video.mp4 [--dyn_threshold_scale 0.7]"
+	echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised] [--dyn_threshold_scale 0.7]"
 	exit 1
 fi
 
@@ -184,6 +188,7 @@ rm -rf "${VGGT_OUTPUT_ROOT}" "${OUTPUTS_DIR}/vggt_chunks"
 mkdir -p "${VGGT_SCENE_OUTPUT}"
 
 VGGT_CHUNK_SIZE="${VGGT_CHUNK_SIZE:-20}"
+VGGT_THRESHOLD_SCALE="${VGGT_THRESHOLD_SCALE:-0.7}"
 START=0
 while [[ "${START}" -lt "${N_FRAMES}" ]]; do
 	END=$((START + VGGT_CHUNK_SIZE))
@@ -208,11 +213,12 @@ while [[ "${START}" -lt "${N_FRAMES}" ]]; do
 		I=$((I + 1))
 	done
 
-	echo "  Chunk ${START}:${END}"
+	echo "  Chunk ${START}:${END} (threshold_scale=${VGGT_THRESHOLD_SCALE})"
 	cd "${VGGT_DIR}"
 	conda run -n "${VGGT_ENV}" python demo_vggt4d.py \
 		--input_dir "${CHUNK_INPUT_ROOT}" \
-		--output_dir "${CHUNK_OUTPUT_ROOT}"
+		--output_dir "${CHUNK_OUTPUT_ROOT}" \
+		--dyn_threshold_scale "${VGGT_THRESHOLD_SCALE}"
 
 	if [[ ! -d "${CHUNK_SCENE_OUTPUT}" ]]; then
 		echo "ERROR: missing chunk output dir: ${CHUNK_SCENE_OUTPUT}"
@@ -252,7 +258,8 @@ cd "${ROOT_DIR}"
 conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/gen_first_mask_from_vggt.py" \
 	--vggt_scene_output "${VGGT_SCENE_OUTPUT}" \
 	--output_dir "${INIT_MASK_DIR}" \
-	--threshold 0
+	--threshold 0 \
+	--merge_all
 
 INIT_MASK_COUNT="$(find "${INIT_MASK_DIR}" -maxdepth 1 -type f -name '*.png' | wc -l | tr -d ' ')"
 if [[ "${INIT_MASK_COUNT}" == "0" ]]; then

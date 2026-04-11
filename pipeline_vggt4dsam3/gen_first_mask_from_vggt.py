@@ -11,6 +11,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vggt_scene_output", required=True, help="VGGT scene output directory containing dynamic_mask_*.png.")
     parser.add_argument("--output_dir", required=True, help="Output directory for indexed init mask.")
     parser.add_argument("--threshold", type=int, default=0, help="Foreground threshold for dynamic mask.")
+    parser.add_argument("--merge_all", action="store_true", help="Merge all frames into a single bounding box region.")
     return parser.parse_args()
 
 
@@ -33,28 +34,52 @@ def main() -> None:
     if not candidates:
         raise RuntimeError(f"No dynamic_mask_*.png found in {args.vggt_scene_output}")
 
-    best_name = None
-    best_area = -1
-    best_indexed = None
     thr = int(args.threshold)
 
-    for name in sorted(candidates, key=_extract_idx):
-        path = os.path.join(args.vggt_scene_output, name)
-        arr = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        if arr is None:
-            continue
-        indexed = np.zeros_like(arr, dtype=np.uint8)
-        indexed[arr > thr] = 1
-        area = int((indexed > 0).sum())
-        if area > best_area:
-            best_area = area
-            best_name = name
-            best_indexed = indexed
+    if args.merge_all:
+        merged = None
+        for name in sorted(candidates, key=_extract_idx):
+            path = os.path.join(args.vggt_scene_output, name)
+            arr = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            if arr is None:
+                continue
+            binary = (arr > thr).astype(np.uint8)
+            if merged is None:
+                merged = binary
+            else:
+                merged = np.maximum(merged, binary)
 
-    if best_name is None or best_indexed is None:
-        raise RuntimeError(f"Failed to read any dynamic mask from {args.vggt_scene_output}")
+        if merged is None:
+            raise RuntimeError(f"Failed to read any dynamic mask from {args.vggt_scene_output}")
 
-    best_idx = _extract_idx(best_name)
+        foreground = int(merged.sum())
+        best_name = "merged_all_frames"
+        best_indexed = merged
+        best_idx = 0
+    else:
+        best_name = None
+        best_area = -1
+        best_indexed = None
+
+        for name in sorted(candidates, key=_extract_idx):
+            path = os.path.join(args.vggt_scene_output, name)
+            arr = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            if arr is None:
+                continue
+            indexed = np.zeros_like(arr, dtype=np.uint8)
+            indexed[arr > thr] = 1
+            area = int((indexed > 0).sum())
+            if area > best_area:
+                best_area = area
+                best_name = name
+                best_indexed = indexed
+
+        if best_name is None or best_indexed is None:
+            raise RuntimeError(f"Failed to read any dynamic mask from {args.vggt_scene_output}")
+
+        best_idx = _extract_idx(best_name)
+        foreground = int((best_indexed > 0).sum())
+
     out_name = f"{best_idx:05d}.png"
     os.makedirs(args.output_dir, exist_ok=True)
     output_mask = os.path.join(args.output_dir, out_name)
@@ -63,8 +88,8 @@ def main() -> None:
         raise RuntimeError(f"Failed to write indexed init mask: {output_mask}")
 
     print(
-        f"Saved indexed init mask from max-area frame {best_name} -> {output_mask}; "
-        f"foreground={best_area}"
+        f"Saved indexed init mask from {best_name} -> {output_mask}; "
+        f"foreground={foreground}"
     )
 
 
