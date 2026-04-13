@@ -1,4 +1,6 @@
 import os
+import shutil
+import subprocess
 
 import cv2
 import numpy as np
@@ -54,10 +56,75 @@ def load_image_sequence(dir_path, max_frames=None):
 
 
 def write_video(frame_list, path, fps, width, height):
-    out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
-    for frame in frame_list:
-        out.write(frame)
-    out.release()
+    def _open_writer(dst_path, codec_list):
+        for codec in codec_list:
+            out = cv2.VideoWriter(dst_path, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
+            if out.isOpened():
+                return out, codec
+        return None, None
+
+    def _write_frames(out):
+        for frame in frame_list:
+            out.write(frame)
+        out.release()
+
+    def _resolve_ffmpeg_binary():
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if ffmpeg_bin:
+            return ffmpeg_bin
+        try:
+            import imageio_ffmpeg
+
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            return None
+
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext == ".mp4":
+        tmp_path = f"{path}.tmp.mp4"
+        out, codec = _open_writer(tmp_path, ["mp4v"])
+        if out is None:
+            raise RuntimeError(f"Cannot open MP4 writer for {path}")
+        _write_frames(out)
+
+        ffmpeg_bin = _resolve_ffmpeg_binary()
+        if ffmpeg_bin:
+            cmd = [
+                ffmpeg_bin,
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                tmp_path,
+                "-an",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                path,
+            ]
+            try:
+                subprocess.run(cmd, check=True)
+                os.remove(tmp_path)
+                print(f"[VideoIO] Wrote MP4 using ffmpeg/libx264 (source codec: {codec})")
+                return
+            except Exception as exc:
+                print(f"[VideoIO] ffmpeg re-encode failed, fallback to OpenCV output: {exc}")
+        else:
+            print("[VideoIO] ffmpeg not found. Install ffmpeg for SSH preview compatibility.")
+
+        os.replace(tmp_path, path)
+        print(f"[VideoIO] Wrote MP4 using OpenCV codec: {codec}")
+        return
+
+    out, codec = _open_writer(path, ["XVID", "MJPG", "mp4v"])
+    if out is None:
+        raise RuntimeError(f"Cannot open video writer for {path}")
+    _write_frames(out)
+    print(f"[VideoIO] Wrote video using OpenCV codec: {codec}")
 
 
 def build_side_by_side(original_frames, result_frames, height):
