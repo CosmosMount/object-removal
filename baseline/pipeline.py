@@ -1,6 +1,8 @@
 import os
 import time
 
+import cv2
+
 from inpainting import inpaint_video
 from masking import extract_masks
 from motion import filter_dynamic
@@ -21,6 +23,12 @@ def ensure_dir(path):
     return path
 
 
+def save_mask_sequence(mask_list, out_dir):
+    ensure_dir(out_dir)
+    for i, mask in enumerate(mask_list):
+        cv2.imwrite(os.path.join(out_dir, f"{i:05d}.png"), mask)
+
+
 def run_pipeline(video_path, output_dir, cfg, mode):
     t0 = time.time()
     ensure_dir(output_dir)
@@ -32,6 +40,11 @@ def run_pipeline(video_path, output_dir, cfg, mode):
     raw_masks, seg_method = extract_masks(frames, cfg)
     dynamic_masks, flow_info = filter_dynamic(frames, raw_masks, cfg)
     dilated_masks = dilate_masks(dynamic_masks, cfg)
+
+    masks_root = ensure_dir(os.path.join(output_dir, "masks"))
+    save_mask_sequence(raw_masks, os.path.join(masks_root, "raw"))
+    save_mask_sequence(dynamic_masks, os.path.join(masks_root, "dynamic"))
+    save_mask_sequence(dilated_masks, os.path.join(masks_root, "final"))
 
     if mode == "compare":
         print("\n[Mode: compare]  Running all three inpainting methods for comparison ...")

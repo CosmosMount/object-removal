@@ -26,6 +26,10 @@ DAVIS_INPUT_ROOT="${ROOT_DIR}/DAVIS"
 EVAL_DAVIS=1
 DAVIS_GT_ROOT="${ROOT_DIR}/DAVIS"
 DAVIS_TASK="unsupervised"
+PART_LABEL="part2"
+GT_MASK_DIR=""
+GT_VIDEO=""
+GT_FRAMES_DIR=""
 SAM2_BASE_VIDEO_DIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,6 +55,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --davis_task)
       DAVIS_TASK="$2"
+      shift 2
+      ;;
+    --part_label)
+      PART_LABEL="$2"
+      shift 2
+      ;;
+    --gt_mask_dir)
+      GT_MASK_DIR="$2"
+      shift 2
+      ;;
+    --gt_video)
+      GT_VIDEO="$2"
+      shift 2
+      ;;
+    --gt_frames_dir)
+      GT_FRAMES_DIR="$2"
       shift 2
       ;;
     *)
@@ -113,7 +133,7 @@ else
     OLD_MASK_DIR="${DAVIS_INPUT_ROOT}/${VIDEO_NAME}_mask"
   fi
 
-  OUTPUTS_DIR="${ROOT_DIR}/outputs/davis/${VIDEO_NAME}"
+  OUTPUTS_DIR="${ROOT_DIR}/outputs/yolosam2_davis/${VIDEO_NAME}"
   if [[ ! -d "${VIDEO_DIR}" ]]; then
     echo "ERROR: DAVIS sequence folder not found: ${VIDEO_DIR}"
     exit 1
@@ -138,6 +158,10 @@ VIDEO_LIST_FILE="${OUTPUTS_DIR}/video_list.txt"
 DAVIS_EVAL_RESULTS_ROOT="${OUTPUTS_DIR}/davis_eval_results"
 DAVIS_EVAL_SEQ_DIR="${DAVIS_EVAL_RESULTS_ROOT}/${VIDEO_NAME}"
 DAVIS_EVAL_SUBSET_ROOT="${OUTPUTS_DIR}/davis_eval_subset"
+DAVIS_CSV_PATH="${DAVIS_EVAL_RESULTS_ROOT}/global_results-val.csv"
+GT_MASK_DIR_FOR_METRICS="${GT_MASK_DIR}"
+PRED_FRAMES_DIR="${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/frames"
+GT_FRAMES_DIR_FOR_METRICS="${GT_FRAMES_DIR}"
 
 if [[ "${DAVIS_TASK}" != "semi-supervised" && "${DAVIS_TASK}" != "unsupervised" ]]; then
   echo "ERROR: --davis_task must be either semi-supervised or unsupervised"
@@ -145,6 +169,14 @@ if [[ "${DAVIS_TASK}" != "semi-supervised" && "${DAVIS_TASK}" != "unsupervised" 
 fi
 
 mkdir -p "${OUTPUTS_DIR}"
+
+# Ensure DAVIS_INPUT_ROOT and DAVIS_GT_ROOT are absolute paths
+if [[ "${DAVIS_INPUT_ROOT}" != /* ]]; then
+  DAVIS_INPUT_ROOT="${ROOT_DIR}/${DAVIS_INPUT_ROOT}"
+fi
+if [[ "${DAVIS_GT_ROOT}" != /* ]]; then
+  DAVIS_GT_ROOT="${ROOT_DIR}/${DAVIS_GT_ROOT}"
+fi
 
 if [[ "${MODE}" == "video" ]]; then
   echo "[1/8] Preprocessing video (split frames + first-frame YOLO mask) in conda env: ${YOLO_ENV}"
@@ -333,6 +365,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
   ln -s "${VIDEO_DIR}" "${DAVIS_EVAL_SUBSET_ROOT}/JPEGImages/480p/${VIDEO_NAME}"
   ln -s "${GT_SEQ_DIR}" "${DAVIS_EVAL_SUBSET_ROOT}/${ANN_FOLDER}/480p/${VIDEO_NAME}"
   printf "%s\n" "${VIDEO_NAME}" > "${DAVIS_EVAL_SUBSET_ROOT}/ImageSets/2017/val.txt"
+  GT_MASK_DIR_FOR_METRICS="${GT_SEQ_DIR}"
 
   cd "${ROOT_DIR}/davis2017-evaluation"
   conda run -n "${DAVIS_ENV}" python evaluation_method.py \
@@ -341,6 +374,38 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
     --davis_path "${DAVIS_EVAL_SUBSET_ROOT}" \
     --results_path "${DAVIS_EVAL_RESULTS_ROOT}"
 fi
+
+echo "[Metrics] Computing JM/JR and optional PSNR/SSIM"
+METRICS_DIR="${OUTPUTS_DIR}/metrics"
+METRICS_CMD=(
+  conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/evaluate_metrics.py"
+  --output_dir "${METRICS_DIR}"
+  --part_label "${PART_LABEL}"
+  --experiment_name "yolosam2"
+  --pred_mask_dir "${NEW_MASK_DIR}"
+  --pred_video "${FINAL_VIDEO_PATH}"
+  --pred_frames_dir "${PRED_FRAMES_DIR}"
+)
+
+if [[ -f "${DAVIS_CSV_PATH}" ]]; then
+  METRICS_CMD+=(--davis_csv "${DAVIS_CSV_PATH}")
+fi
+if [[ -n "${GT_MASK_DIR_FOR_METRICS}" ]]; then
+  METRICS_CMD+=(--gt_mask_dir "${GT_MASK_DIR_FOR_METRICS}")
+fi
+if [[ -n "${GT_VIDEO}" ]]; then
+  METRICS_CMD+=(--gt_video "${GT_VIDEO}")
+fi
+
+# Always set GT_FRAMES_DIR_FOR_METRICS
+if [[ "${MODE}" == "davis" ]]; then
+  GT_FRAMES_DIR_FOR_METRICS="${DAVIS_INPUT_ROOT}/JPEGImages/480p/${VIDEO_NAME}"
+else
+  GT_FRAMES_DIR_FOR_METRICS="${VIDEO_DIR}"
+fi
+METRICS_CMD+=(--gt_frames_dir "${GT_FRAMES_DIR_FOR_METRICS}")
+
+"${METRICS_CMD[@]}" || echo "WARN: metrics evaluation failed"
 
 echo "Done. Outputs:"
 echo "- Segmentation demos: ${SEG_DEMO_DIR}"
@@ -353,3 +418,4 @@ if [[ "${MODE}" == "davis" ]]; then
     echo "- DAVIS CSV results:  ${DAVIS_EVAL_RESULTS_ROOT}/global_results-val.csv"
   fi
 fi
+echo "- Metric summary:    ${METRICS_DIR}/metrics_summary.json"

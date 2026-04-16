@@ -23,6 +23,10 @@ DAVIS_INPUT_ROOT="${ROOT_DIR}/DAVIS"
 EVAL_DAVIS=1
 DAVIS_GT_ROOT="${ROOT_DIR}/DAVIS"
 DAVIS_TASK="unsupervised"
+PART_LABEL="part3"
+GT_MASK_DIR=""
+GT_VIDEO=""
+GT_FRAMES_DIR=""
 SAM3_BASE_VIDEO_DIR=""
 
 while [[ $# -gt 0 ]]; do
@@ -53,6 +57,22 @@ while [[ $# -gt 0 ]]; do
 			;;
 		--dyn_threshold_scale)
 			VGGT_THRESHOLD_SCALE="$2"
+			shift 2
+			;;
+		--part_label)
+			PART_LABEL="$2"
+			shift 2
+			;;
+		--gt_mask_dir)
+			GT_MASK_DIR="$2"
+			shift 2
+			;;
+		--gt_video)
+			GT_VIDEO="$2"
+			shift 2
+			;;
+		--gt_frames_dir)
+			GT_FRAMES_DIR="$2"
 			shift 2
 			;;
 		*)
@@ -150,8 +170,20 @@ FINAL_VIDEO_PATH="${OUTPUTS_DIR}/inpaint_out.mp4"
 DAVIS_EVAL_RESULTS_ROOT="${OUTPUTS_DIR}/davis_eval_results"
 DAVIS_EVAL_SEQ_DIR="${DAVIS_EVAL_RESULTS_ROOT}/${VIDEO_NAME}"
 DAVIS_EVAL_SUBSET_ROOT="${OUTPUTS_DIR}/davis_eval_subset"
+DAVIS_CSV_PATH="${DAVIS_EVAL_RESULTS_ROOT}/global_results-val.csv"
+GT_MASK_DIR_FOR_METRICS="${GT_MASK_DIR}"
+PRED_FRAMES_DIR="${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/frames"
+GT_FRAMES_DIR_FOR_METRICS="${GT_FRAMES_DIR}"
 
 mkdir -p "${OUTPUTS_DIR}"
+
+# Ensure DAVIS_INPUT_ROOT and DAVIS_GT_ROOT are absolute paths
+if [[ "${DAVIS_INPUT_ROOT}" != /* ]]; then
+  DAVIS_INPUT_ROOT="${ROOT_DIR}/${DAVIS_INPUT_ROOT}"
+fi
+if [[ "${DAVIS_GT_ROOT}" != /* ]]; then
+  DAVIS_GT_ROOT="${ROOT_DIR}/${DAVIS_GT_ROOT}"
+fi
 
 if [[ "${MODE}" == "video" ]]; then
 	if [[ ! -d "${VIDEO_DIR}" ]]; then
@@ -398,6 +430,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 	ln -s "${VIDEO_DIR}" "${DAVIS_EVAL_SUBSET_ROOT}/JPEGImages/480p/${VIDEO_NAME}"
 	ln -s "${GT_SEQ_DIR}" "${DAVIS_EVAL_SUBSET_ROOT}/${ANN_FOLDER}/480p/${VIDEO_NAME}"
 	printf "%s\n" "${VIDEO_NAME}" > "${DAVIS_EVAL_SUBSET_ROOT}/ImageSets/2017/val.txt"
+	GT_MASK_DIR_FOR_METRICS="${GT_SEQ_DIR}"
 
 	cd "${ROOT_DIR}/davis2017-evaluation"
 	conda run -n "${DAVIS_ENV}" python evaluation_method.py \
@@ -406,6 +439,38 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 		--davis_path "${DAVIS_EVAL_SUBSET_ROOT}" \
 		--results_path "${DAVIS_EVAL_RESULTS_ROOT}"
 fi
+
+echo "[Metrics] Computing JM/JR and optional PSNR/SSIM"
+METRICS_DIR="${OUTPUTS_DIR}/metrics"
+METRICS_CMD=(
+	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/evaluate_metrics.py"
+	--output_dir "${METRICS_DIR}"
+	--part_label "${PART_LABEL}"
+	--experiment_name "vggt4dsam3"
+	--pred_mask_dir "${NEW_MASK_DIR}"
+	--pred_video "${FINAL_VIDEO_PATH}"
+	--pred_frames_dir "${PRED_FRAMES_DIR}"
+)
+
+if [[ -f "${DAVIS_CSV_PATH}" ]]; then
+	METRICS_CMD+=(--davis_csv "${DAVIS_CSV_PATH}")
+fi
+if [[ -n "${GT_MASK_DIR_FOR_METRICS}" ]]; then
+	METRICS_CMD+=(--gt_mask_dir "${GT_MASK_DIR_FOR_METRICS}")
+fi
+if [[ -n "${GT_VIDEO}" ]]; then
+	METRICS_CMD+=(--gt_video "${GT_VIDEO}")
+fi
+
+# Always set GT_FRAMES_DIR_FOR_METRICS
+if [[ "${MODE}" == "davis" ]]; then
+	GT_FRAMES_DIR_FOR_METRICS="${DAVIS_INPUT_ROOT}/JPEGImages/480p/${VIDEO_NAME}"
+else
+	GT_FRAMES_DIR_FOR_METRICS="${VIDEO_DIR}"
+fi
+METRICS_CMD+=(--gt_frames_dir "${GT_FRAMES_DIR_FOR_METRICS}")
+
+"${METRICS_CMD[@]}" || echo "WARN: metrics evaluation failed"
 
 echo "Done. Outputs:"
 echo "- VGGT output scene:  ${VGGT_SCENE_OUTPUT}"
@@ -418,3 +483,4 @@ echo "- Inpaint video:      ${FINAL_VIDEO_PATH}"
 if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 	echo "- DAVIS CSV results:  ${DAVIS_EVAL_RESULTS_ROOT}/global_results-val.csv"
 fi
+echo "- Metric summary:    ${METRICS_DIR}/metrics_summary.json"
