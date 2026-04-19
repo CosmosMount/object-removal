@@ -66,6 +66,10 @@ while [[ $# -gt 0 ]]; do
 			GT_FRAMES_DIR="$2"
 			shift 2
 			;;
+		--dyn_threshold_scale)
+			VGGT_THRESHOLD_SCALE="$2"
+			shift 2
+			;;
 		*)
 			echo "Unknown argument: $1"
 			echo "Usage:"
@@ -227,7 +231,8 @@ else
 		cd "${VGGT_DIR}"
 		conda run -n "${VGGT_ENV}" python demo_vggt4d.py \
 			--input_dir "${CHUNK_INPUT_ROOT}" \
-			--output_dir "${CHUNK_OUTPUT_ROOT}"
+			--output_dir "${CHUNK_OUTPUT_ROOT}" \
+			--dyn_threshold_scale "${VGGT_THRESHOLD_SCALE}"
 
 		if [[ ! -d "${CHUNK_SCENE_OUTPUT}" ]]; then
 			echo "ERROR: missing chunk output dir: ${CHUNK_SCENE_OUTPUT}"

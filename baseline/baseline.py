@@ -75,16 +75,20 @@ def main():
 
     run_pipeline(args.video, args.output, cfg, args.mode)
 
+    # Evaluation logic after pipeline execution
+    print("[Evaluation] Starting evaluation of results...")
+
+    # Define paths for evaluation
     eval_script = os.path.join(os.path.dirname(os.path.dirname(__file__)), "evaluate_metrics.py")
     pred_mask_dir = os.path.join(args.output, "masks", "final")
     pred_video = os.path.join(args.output, "inpainted_output.mp4")
 
-    propainter_env = os.environ.get("PROPAINTER_ENV", "propainter")
+    # Set up evaluation command
     eval_cmd = [
         "conda",
         "run",
         "-n",
-        propainter_env,
+        "propainter",
         "python",
         eval_script,
         "--output_dir",
@@ -97,17 +101,15 @@ def main():
         pred_mask_dir,
         "--pred_video",
         pred_video,
-        "--video_metric_impl",
-        "propainter",
     ]
 
+    # Add optional ground truth parameters
     if args.gt_mask_dir:
         eval_cmd.extend(["--gt_mask_dir", args.gt_mask_dir])
     if args.gt_video:
         eval_cmd.extend(["--gt_video", args.gt_video])
     elif os.path.isfile(args.video):
         eval_cmd.extend(["--gt_video", args.video])
-
 
     # Always set gt_frames_dir for metrics
     gt_frames_dir = args.gt_frames_dir
@@ -123,8 +125,10 @@ def main():
     if gt_frames_dir:
         eval_cmd.extend(["--gt_frames_dir", gt_frames_dir])
 
+    # Run evaluation command
     try:
         subprocess.run(eval_cmd, check=True)
+        print("[Evaluation] Metrics evaluation completed successfully.")
     except Exception as exc:
         print(f"[WARN] Metric evaluation failed: {exc}")
 
