@@ -133,6 +133,7 @@ VIS_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_optflow_vis"
 SEG_DEMO_DIR="${VIS_ROOT}/seg_demo"
 MASK_COMPARE_DIR="${VIS_ROOT}/mask_compare"
 INPAINT_5_DIR="${VIS_ROOT}/inpaint_5frames"
+MASK_VIDEO_PATH="${VIS_ROOT}/mask_overlay.mp4"
 
 PROPAINTER_OUT_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_propainter"
 PROPAINTER_VIDEO_PATH="${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/inpaint_out.mp4"
@@ -163,8 +164,17 @@ fi
 if [[ "${MODE}" == "video" ]]; then
   echo "[1/5] Checking video frames in ${VIDEO_DIR}"
   if [[ ! -d "${VIDEO_DIR}" ]]; then
-    echo "ERROR: video frames directory not found: ${VIDEO_DIR}"
-    exit 1
+    VIDEO_FILE="${ROOT_DIR}/${VIDEO_NAME}.mp4"
+    if [[ -f "${VIDEO_FILE}" ]]; then
+      echo "   Extracting frames from video ${VIDEO_FILE}..."
+      mkdir -p "${VIDEO_DIR}"
+      ffmpeg -i "${VIDEO_FILE}" -vf "scale=ceil(iw/2)*2:ceil(ih/2)*2" "${VIDEO_DIR}/%05d.jpg" -y
+      echo "   Frames extracted to ${VIDEO_DIR}"
+    else
+      echo "ERROR: video frames directory not found: ${VIDEO_DIR}"
+      echo "Hint: Place frames in inputs/walking4/ or put walking4.mp4 in project root"
+      exit 1
+    fi
   fi
 
   rm -rf "${TMP_FIRST_MASK_DIR}"
@@ -210,7 +220,8 @@ conda run -n "${YOLO_ENV}" python "${ROOT_DIR}/pipeline_yoloopt/optflow_postproc
   --first_mask_dir "${TMP_FIRST_MASK_DIR}" \
   --old_mask_dir "${OLD_MASK_DIR}" \
   --output_dir "${OUTPUTS_DIR}" \
-  --video_name "${VIDEO_NAME}"
+  --video_name "${VIDEO_NAME}" \
+  --mask_video_path "${MASK_VIDEO_PATH}"
 
 echo "[3/5] Rendering 5 segmentation demo images..."
 echo "[3/5] Segmentation demos generated in step 2."
@@ -365,6 +376,7 @@ METRICS_CMD+=(--gt_frames_dir "${GT_FRAMES_DIR_FOR_METRICS}")
 echo "Done. Outputs:"
 echo "- Segmentation demos: ${SEG_DEMO_DIR}"
 echo "- Mask comparisons:   ${MASK_COMPARE_DIR}"
+echo "- Mask overlay video: ${MASK_VIDEO_PATH}"
 echo "- Inpaint video:     ${FINAL_VIDEO_PATH}"
 if [[ "${MODE}" == "davis" ]]; then
   echo "- DAVIS eval masks:   ${DAVIS_EVAL_SEQ_DIR}"

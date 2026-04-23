@@ -108,6 +108,13 @@ if [[ -n "${VIDEO_PATH}" ]]; then
 	VIDEO_DIR="${INPUTS_DIR}/${VIDEO_NAME}"
 	OLD_MASK_DIR="${INPUTS_DIR}/${VIDEO_NAME}_mask"
 	OUTPUTS_DIR="${ROOT_DIR}/outputs/vggt/${VIDEO_NAME}"
+	
+	if [[ ! -d "${VIDEO_DIR}" ]]; then
+		echo "   Extracting frames from video ${VIDEO_PATH}..."
+		mkdir -p "${VIDEO_DIR}"
+		ffmpeg -i "${VIDEO_PATH}" -vf "scale=ceil(iw/2)*2:ceil(ih/2)*2" "${VIDEO_DIR}/%05d.jpg" -y
+		echo "   Frames extracted to ${VIDEO_DIR}"
+	fi
 else
 	MODE="davis"
 	VIDEO_NAME="${DAVIS_SEQ}"
@@ -144,6 +151,7 @@ VIS_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_vggt_vis"
 SEG_DEMO_DIR="${VIS_ROOT}/seg_demo"
 MASK_COMPARE_DIR="${VIS_ROOT}/mask_compare"
 INPAINT_5_DIR="${VIS_ROOT}/inpaint_5frames"
+MASK_VIDEO_PATH="${VIS_ROOT}/mask_overlay.mp4"
 
 PROPAINTER_OUT_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_propainter"
 PROPAINTER_VIDEO_PATH="${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/inpaint_out.mp4"
@@ -282,7 +290,8 @@ conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/postprocess
 	--mask_compare_dir "${MASK_COMPARE_DIR}" \
 	--inpaint_frames_dir "${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/frames" \
 	--inpaint_5_dir "${INPAINT_5_DIR}" \
-	--num 5
+	--num 5 \
+	--mask_video_path "${MASK_VIDEO_PATH}"
 
 if [[ ! -d "${NEW_MASK_DIR}" ]]; then
 	echo "ERROR: missing mask directory ${NEW_MASK_DIR}"
@@ -325,7 +334,8 @@ conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/postprocess
 	--mask_compare_dir "${MASK_COMPARE_DIR}" \
 	--inpaint_frames_dir "${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/frames" \
 	--inpaint_5_dir "${INPAINT_5_DIR}" \
-	--num 5
+	--num 5 \
+	--mask_video_path "${MASK_VIDEO_PATH}"
 
 if [[ -f "${PROPAINTER_VIDEO_PATH}" ]]; then
 	cp -f "${PROPAINTER_VIDEO_PATH}" "${FINAL_VIDEO_PATH}"
@@ -417,6 +427,7 @@ echo "- VGGT mask dir:      ${NEW_MASK_DIR}"
 echo "- Segmentation demos: ${SEG_DEMO_DIR}"
 echo "- Mask comparisons:   ${MASK_COMPARE_DIR}"
 echo "- Inpaint 5 frames:   ${INPAINT_5_DIR}"
+echo "- Mask overlay video: ${MASK_VIDEO_PATH}"
 echo "- Inpaint video:      ${FINAL_VIDEO_PATH}"
 if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 	echo "- DAVIS CSV results:  ${DAVIS_EVAL_RESULTS_ROOT}/global_results-val.csv"

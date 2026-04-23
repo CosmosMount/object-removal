@@ -107,6 +107,13 @@ if [[ -n "${VIDEO_PATH}" ]]; then
   OLD_MASK_DIR="${INPUTS_DIR}/${VIDEO_NAME}_mask"
   SAM2_BASE_VIDEO_DIR="${INPUTS_DIR}"
   OUTPUTS_DIR="${ROOT_DIR}/outputs/yolosam2/${VIDEO_NAME}"
+  
+  if [[ ! -d "${VIDEO_DIR}" ]]; then
+    echo "   Extracting frames from video ${VIDEO_PATH}..."
+    mkdir -p "${VIDEO_DIR}"
+    ffmpeg -i "${VIDEO_PATH}" -vf "scale=ceil(iw/2)*2:ceil(ih/2)*2" "${VIDEO_DIR}/%05d.jpg" -y
+    echo "   Frames extracted to ${VIDEO_DIR}"
+  fi
 else
   MODE="davis"
   VIDEO_NAME="${DAVIS_SEQ}"
@@ -148,6 +155,7 @@ VIS_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_sam2_vis"
 SEG_DEMO_DIR="${VIS_ROOT}/seg_demo"
 MASK_COMPARE_DIR="${VIS_ROOT}/mask_compare"
 INPAINT_5_DIR="${VIS_ROOT}/inpaint_5frames"
+MASK_VIDEO_PATH="${VIS_ROOT}/mask_overlay.mp4"
 
 PROPAINTER_OUT_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_propainter"
 PROPAINTER_VIDEO_PATH="${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/inpaint_out.mp4"
@@ -239,7 +247,8 @@ conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_yolosam2/sam2_post
   --output_root "${OUTPUTS_DIR}" \
   --video_name "${VIDEO_NAME}" \
   --frame_dir "${VIDEO_DIR}" \
-  --old_mask_dir "${OLD_MASK_DIR}"
+  --old_mask_dir "${OLD_MASK_DIR}" \
+  --mask_video_path "${MASK_VIDEO_PATH}"
 
 echo "[5/8] Rendering 5 SAM2 segmentation demo images..."
 echo "[5/8] Segmentation demos generated in step 4."
@@ -259,7 +268,7 @@ cd "${PROPAINTER_DIR}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128,garbage_collection_threshold:0.8}"
 
 # Low-memory defaults (can be overridden by exporting these vars before running script).
-PROPAINTER_RESIZE_RATIO="${PROPAINTER_RESIZE_RATIO:-0.75}"
+PROPAINTER_RESIZE_RATIO="${PROPAINTER_RESIZE_RATIO:-0.5}"
 PROPAINTER_SUBVIDEO_LENGTH="${PROPAINTER_SUBVIDEO_LENGTH:-40}"
 PROPAINTER_NEIGHBOR_LENGTH="${PROPAINTER_NEIGHBOR_LENGTH:-8}"
 PROPAINTER_RAFT_ITER="${PROPAINTER_RAFT_ITER:-12}"
@@ -288,7 +297,8 @@ conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_yolosam2/sam2_post
   --output_root "${OUTPUTS_DIR}" \
   --video_name "${VIDEO_NAME}" \
   --frame_dir "${VIDEO_DIR}" \
-  --old_mask_dir "${OLD_MASK_DIR}"
+  --old_mask_dir "${OLD_MASK_DIR}" \
+  --mask_video_path "${MASK_VIDEO_PATH}"
 
 if [[ -f "${PROPAINTER_VIDEO_PATH}" ]]; then
   cp -f "${PROPAINTER_VIDEO_PATH}" "${FINAL_VIDEO_PATH}"
@@ -411,6 +421,7 @@ echo "Done. Outputs:"
 echo "- Segmentation demos: ${SEG_DEMO_DIR}"
 echo "- Mask comparisons:   ${MASK_COMPARE_DIR}"
 echo "- Inpaint 5 frames:   ${INPAINT_5_DIR}"
+echo "- Mask overlay video: ${MASK_VIDEO_PATH}"
 echo "- Inpaint video:      ${FINAL_VIDEO_PATH}"
 if [[ "${MODE}" == "davis" ]]; then
   echo "- DAVIS eval masks:   ${DAVIS_EVAL_SEQ_DIR}"

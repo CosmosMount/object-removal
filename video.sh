@@ -31,7 +31,7 @@ OUTPUT_SUBDIR="outputs/origins"
 mkdir -p "$OUTPUT_SUBDIR"
 
 # Combine images into a video
-ffmpeg -framerate 30 -i "$INPUT_PATH/%05d.jpg" -c:v libx264 -pix_fmt yuv420p "$OUTPUT_VIDEO"
+ffmpeg -framerate 30 -i "$INPUT_PATH/%05d.jpg" -vf "scale=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -pix_fmt yuv420p "$OUTPUT_VIDEO"
 
 # Check if the video was created successfully
 if [ $? -eq 0 ]; then

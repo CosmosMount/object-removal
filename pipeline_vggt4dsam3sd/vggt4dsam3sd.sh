@@ -120,6 +120,13 @@ if [[ -n "${VIDEO_PATH}" ]]; then
 	OLD_MASK_DIR="${INPUTS_DIR}/${VIDEO_NAME}_mask"
 	SAM3_BASE_VIDEO_DIR="${INPUTS_DIR}"
 	OUTPUTS_DIR="${ROOT_DIR}/outputs/vggtsam3sd/${VIDEO_NAME}"
+	
+	if [[ ! -d "${VIDEO_DIR}" ]]; then
+		echo "   Extracting frames from video ${VIDEO_PATH}..."
+		mkdir -p "${VIDEO_DIR}"
+		ffmpeg -i "${VIDEO_PATH}" -vf "scale=ceil(iw/2)*2:ceil(ih/2)*2" "${VIDEO_DIR}/%05d.jpg" -y
+		echo "   Frames extracted to ${VIDEO_DIR}"
+	fi
 else
 	MODE="davis"
 	VIDEO_NAME="${DAVIS_SEQ}"
@@ -170,6 +177,7 @@ VIS_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_sam3_vis"
 SEG_DEMO_DIR="${VIS_ROOT}/seg_demo"
 MASK_COMPARE_DIR="${VIS_ROOT}/mask_compare"
 INPAINT_5_DIR="${VIS_ROOT}/inpaint_5frames"
+MASK_VIDEO_PATH="${VIS_ROOT}/mask_overlay.mp4"
 
 # SD keyframe outputs
 SD_KEYFRAME_DIR="${OUTPUTS_DIR}/${VIDEO_NAME}_sd_keyframes"
@@ -185,7 +193,7 @@ DAVIS_EVAL_SEQ_DIR="${DAVIS_EVAL_RESULTS_ROOT}/${VIDEO_NAME}"
 DAVIS_EVAL_SUBSET_ROOT="${OUTPUTS_DIR}/davis_eval_subset"
 DAVIS_CSV_PATH="${DAVIS_EVAL_RESULTS_ROOT}/global_results-val.csv"
 GT_MASK_DIR_FOR_METRICS="${GT_MASK_DIR}"
-PRED_FRAMES_DIR="${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/frames"
+PRED_FRAMES_DIR="${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/bmx-trees_sd_merged_frame/frames"
 GT_FRAMES_DIR_FOR_METRICS="${GT_FRAMES_DIR}"
 
 mkdir -p "${OUTPUTS_DIR}"
@@ -333,7 +341,8 @@ conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/postpro
 	--mask_compare_dir "${MASK_COMPARE_DIR}" \
 	--inpaint_frames_dir "${PROPAINTER_OUT_ROOT}/${PROPAINTER_VIDEO_SUBDIR}/frames" \
 	--inpaint_5_dir "${INPAINT_5_DIR}" \
-	--num 5
+	--num 5 \
+	--mask_video_path "${MASK_VIDEO_PATH}"
 
 if [[ ! -d "${NEW_MASK_DIR}" ]]; then
 	echo "ERROR: missing mask directory ${NEW_MASK_DIR}"
@@ -417,9 +426,10 @@ conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/postpro
 	--old_mask_dir "${OLD_MASK_DIR}" \
 	--seg_demo_dir "${SEG_DEMO_DIR}" \
 	--mask_compare_dir "${MASK_COMPARE_DIR}" \
-	--inpaint_frames_dir "${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/frames" \
+	--inpaint_frames_dir "${PROPAINTER_OUT_ROOT}/${PROPAINTER_VIDEO_SUBDIR}/frames" \
 	--inpaint_5_dir "${INPAINT_5_DIR}" \
-	--num 5
+	--num 5 \
+	--mask_video_path "${MASK_VIDEO_PATH}"
 
 if [[ -f "${PROPAINTER_VIDEO_PATH}" ]]; then
 	cp -f "${PROPAINTER_VIDEO_PATH}" "${FINAL_VIDEO_PATH}"
@@ -528,6 +538,7 @@ echo "- SD merged frames:    ${SD_MERGED_FRAMES_DIR}"
 echo "- Segmentation demos:  ${SEG_DEMO_DIR}"
 echo "- Mask comparisons:    ${MASK_COMPARE_DIR}"
 echo "- Inpaint 5 frames:    ${INPAINT_5_DIR}"
+echo "- Mask overlay video: ${MASK_VIDEO_PATH}"
 echo "- Inpaint video:       ${FINAL_VIDEO_PATH}"
 if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 	echo "- DAVIS CSV results:   ${DAVIS_EVAL_RESULTS_ROOT}/global_results-val.csv"

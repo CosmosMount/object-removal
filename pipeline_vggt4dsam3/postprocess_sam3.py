@@ -2,7 +2,10 @@
 import argparse
 import os
 import shutil
+import subprocess
+import tempfile
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -101,6 +104,61 @@ def export_inpaint_5(frame_dir: str, out_dir: str, num: int = 5) -> None:
         shutil.copy2(os.path.join(frame_dir, name), os.path.join(out_dir, out_name))
 
 
+def export_mask_video(frame_dir: str, mask_dir: str, out_path: str, fps: float = 10.0, alpha: float = 0.5) -> None:
+    frames = sorted([x for x in os.listdir(frame_dir) if x.lower().endswith((".jpg", ".jpeg", ".png"))])
+    if not frames:
+        print(f"[export_mask_video] No frames found in {frame_dir}")
+        return
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    mask_names = set([x for x in os.listdir(mask_dir) if x.lower().endswith(".png")])
+
+    video_frames = []
+    for frame_name in frames:
+        img = np.array(Image.open(os.path.join(frame_dir, frame_name)).convert("RGB"))
+
+        base_name = os.path.splitext(frame_name)[0] + ".png"
+        if base_name in mask_names:
+            m = np.array(Image.open(os.path.join(mask_dir, base_name)).convert("L")) > 0
+        else:
+            m = np.zeros((img.shape[0], img.shape[1]), dtype=bool)
+
+        color_mask = np.zeros_like(img)
+        color_mask[m] = [255, 0, 0]
+
+        overlay = cv2.addWeighted(img, 1 - alpha, color_mask, alpha, 0)
+        video_frames.append(overlay)
+
+    if not video_frames:
+        print(f"[export_mask_video] No frames to write")
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for i, frame in enumerate(video_frames):
+            cv2.imwrite(os.path.join(tmpdir, f"{i:05d}.jpg"), frame)
+
+        cmd = [
+            "ffmpeg", "-y", "-framerate", str(fps),
+            "-i", os.path.join(tmpdir, "%05d.jpg"),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            out_path
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            print(f"[export_mask_video] Saved to {out_path} ({len(video_frames)} frames @ {fps} fps)")
+        except subprocess.CalledProcessError as e:
+            print(f"[export_mask_video] ffmpeg failed: {e.stderr.decode() if e.stderr else e}")
+            h, w = video_frames[0].shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+            for frame in video_frames:
+                out.write(frame)
+            out.release()
+            print(f"[export_mask_video] Saved to {out_path} (fallback to mp4v)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Postprocess SAM3 masks and render demos.")
     parser.add_argument("--raw_mask_dir", required=True)
@@ -112,6 +170,9 @@ def main() -> None:
     parser.add_argument("--inpaint_frames_dir", required=True)
     parser.add_argument("--inpaint_5_dir", required=True)
     parser.add_argument("--num", type=int, default=5)
+    parser.add_argument("--mask_video_path", type=str, default=None, help="Path to export mask overlay video")
+    parser.add_argument("--mask_video_fps", type=float, default=10.0, help="FPS for mask video export")
+    parser.add_argument("--mask_video_alpha", type=float, default=0.5, help="Alpha for mask overlay")
     args = parser.parse_args()
 
     convert_masks(args.raw_mask_dir, args.new_mask_dir)
@@ -124,6 +185,10 @@ def main() -> None:
     print("mask_compare_dir:", args.mask_compare_dir)
     if os.path.isdir(args.inpaint_frames_dir):
         print("inpaint_5_dir:", args.inpaint_5_dir)
+
+    if args.mask_video_path:
+        export_mask_video(args.frame_dir, args.new_mask_dir, args.mask_video_path,
+                         fps=args.mask_video_fps, alpha=args.mask_video_alpha)
 
 
 if __name__ == "__main__":
