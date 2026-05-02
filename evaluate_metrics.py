@@ -24,6 +24,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--davis_csv", default="", help="Path to DAVIS global_results-val.csv")
     parser.add_argument("--pred_mask_dir", default="", help="Predicted mask directory (PNG sequence)")
     parser.add_argument("--gt_mask_dir", default="", help="GT mask directory (PNG sequence)")
+    parser.add_argument(
+        "--merge_gt_objects",
+        action="store_true",
+        default=True,
+        help="Merge all GT objects into a single binary mask (default: True). "
+             "This treats all objects as one unified mask for evaluation.",
+    )
+    parser.add_argument(
+        "--no_merge_gt_objects",
+        action="store_false",
+        dest="merge_gt_objects",
+        help="Do not merge GT objects (original behavior with per-object evaluation).",
+    )
 
     parser.add_argument("--pred_video", default="", help="Predicted output video path")
     parser.add_argument("--gt_video", default="", help="GT video path")
@@ -79,14 +92,24 @@ def _list_image_files(root: Path) -> List[Path]:
     return sorted(files)
 
 
-def _load_mask(path: Path) -> np.ndarray:
+def _load_mask(path: Path, merge_objects: bool = True) -> np.ndarray:
     mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if mask is None:
         raise RuntimeError(f"Failed to read mask: {path}")
-    return mask > 0
+    if merge_objects:
+        return mask > 0
+    return mask
 
 
-def compute_mask_jm_jr(pred_dir: Path, gt_dir: Path) -> Tuple[Optional[float], Optional[float], int]:
+def compute_mask_jm_jr(pred_dir: Path, gt_dir: Path, merge_gt_objects: bool = True) -> Tuple[Optional[float], Optional[float], int]:
+    """Compute JM and JR metrics.
+    
+    Args:
+        pred_dir: Directory with predicted masks
+        gt_dir: Directory with ground truth masks
+        merge_gt_objects: If True, merge all GT objects into a single binary mask.
+            This is useful when GT has multiple objects labeled with different values.
+    """
     pred_files = _list_image_files(pred_dir)
     gt_files = _list_image_files(gt_dir)
     if not pred_files or not gt_files:
@@ -106,8 +129,8 @@ def compute_mask_jm_jr(pred_dir: Path, gt_dir: Path) -> Tuple[Optional[float], O
 
     ious = []
     for pred_path, gt_path in pairs:
-        pred = _load_mask(pred_path)
-        gt = _load_mask(gt_path)
+        pred = _load_mask(pred_path, merge_objects=False)  # Pred is already binary
+        gt = _load_mask(gt_path, merge_objects=merge_gt_objects)  # Merge GT objects if requested
         if pred.shape != gt.shape:
             pred_u8 = (pred.astype(np.uint8) * 255)
             pred_u8 = cv2.resize(pred_u8, (gt.shape[1], gt.shape[0]), interpolation=cv2.INTER_NEAREST)
@@ -295,8 +318,10 @@ def main() -> None:
     mask_frames = 0
     mask_source = "none"
 
+    # When merge_gt_objects is True, skip DAVIS CSV and compute directly
+    # because DAVIS official evaluation doesn't support merged GT objects
     davis_csv = Path(args.davis_csv) if args.davis_csv else None
-    if davis_csv:
+    if davis_csv and not args.merge_gt_objects:
         jm, jr = load_davis_jm_jr(davis_csv)
         if jm is not None and jr is not None:
             mask_jm, mask_jr = jm, jr
@@ -305,7 +330,7 @@ def main() -> None:
     if mask_jm is None and args.pred_mask_dir and args.gt_mask_dir:
         pred_mask_dir = Path(args.pred_mask_dir)
         gt_mask_dir = Path(args.gt_mask_dir)
-        jm, jr, n = compute_mask_jm_jr(pred_mask_dir, gt_mask_dir)
+        jm, jr, n = compute_mask_jm_jr(pred_mask_dir, gt_mask_dir, merge_gt_objects=args.merge_gt_objects)
         if jm is not None and jr is not None:
             mask_jm, mask_jr, mask_frames = jm, jr, n
             mask_source = "mask_dir"

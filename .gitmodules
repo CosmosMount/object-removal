@@ -1,15 +1,18 @@
 [submodule "sam2"]
-	path = sam2
+	path = external/sam2
 	url = git@github.com:CosmosMount/sam2.git
 [submodule "ProPainter"]
-	path = ProPainter
+	path = external/ProPainter
 	url = git@github.com:CosmosMount/ProPainter.git
 [submodule "davis2017-evaluation"]
-	path = davis2017-evaluation
+	path = external/davis2017-evaluation
 	url = git@github.com:CosmosMount/davis2017-evaluation.git
 [submodule "VGGT4D"]
-	path = VGGT4D
+	path = external/VGGT4D
 	url = git@github.com:CosmosMount/VGGT4D.git
 [submodule "sam3"]
-	path = sam3
+	path = external/sam3
 	url = git@github.com:CosmosMount/sam3.git
+[submodule "DiffuEraser"]
+	path = external/DiffuEraser
+	url = https://github.com/lixiaowen-xw/DiffuEraser.git
