@@ -16,3 +16,6 @@
 [submodule "DiffuEraser"]
 	path = external/DiffuEraser
 	url = https://github.com/lixiaowen-xw/DiffuEraser.git
+[submodule "external/Track-Anything"]
+	path = external/Track-Anything
+	url = https://github.com/gaomingqi/Track-Anything.git
