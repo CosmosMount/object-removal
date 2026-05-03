@@ -166,10 +166,15 @@ def resolve_video_metric_fn(impl: str) -> Callable[[np.ndarray, np.ndarray], Tup
         return _internal_calc_psnr_and_ssim
 
     repo_root = Path(__file__).resolve().parent
-    propainter_root = repo_root / "ProPainter"
+    candidates = (
+        repo_root / "external" / "ProPainter",
+        repo_root / "ProPainter",
+    )
+    propainter_root = next((p for p in candidates if (p / "core" / "metrics.py").is_file()), None)
+    if propainter_root is None:
+        tried = ", ".join(str(p / "core" / "metrics.py") for p in candidates)
+        raise RuntimeError(f"ProPainter metrics file not found. Tried: {tried}")
     metrics_file = propainter_root / "core" / "metrics.py"
-    if not metrics_file.exists():
-        raise RuntimeError(f"ProPainter metrics file not found: {metrics_file}")
 
     if str(propainter_root) not in sys.path:
         sys.path.insert(0, str(propainter_root))

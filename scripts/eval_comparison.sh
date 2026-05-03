@@ -3,9 +3,9 @@
 # Evaluation and comparison only script
 # Run this after pipelines complete to collect metrics and generate comparison summary
 
-DAVIS_INPUT_ROOT="/home/xyz/Desktop/yzhang/object-removal/DAVIS"
-DAVIS_GT_ROOT="/home/xyz/Desktop/yzhang/object-removal/DAVIS"
 ROOT_DIR="/home/xyz/Desktop/yzhang/object-removal"
+DAVIS_INPUT_ROOT="${ROOT_DIR}/data/DAVIS"
+DAVIS_GT_ROOT="${ROOT_DIR}/data/DAVIS"
 OUTPUTS_DIR="${ROOT_DIR}/outputs"
 PROPAINTER_ENV="propainter"
 

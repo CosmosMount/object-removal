@@ -17,15 +17,15 @@ YOLO_ENV="${YOLO_ENV:-sam2}"
 DAVIS_ENV="${DAVIS_ENV:-davis}"
 export ROOT_DIR
 
-PROPAINTER_DIR="${ROOT_DIR}/ProPainter"
-SAM2_DIR="${ROOT_DIR}/sam2"
-INPUTS_DIR="${ROOT_DIR}/inputs"
+PROPAINTER_DIR="${ROOT_DIR}/external/ProPainter"
+SAM2_DIR="${ROOT_DIR}/external/sam2"
+INPUTS_DIR="${ROOT_DIR}/data/inputs"
 
 VIDEO_PATH=""
 DAVIS_SEQ=""
-DAVIS_INPUT_ROOT="${ROOT_DIR}/DAVIS"
+DAVIS_INPUT_ROOT="${ROOT_DIR}/data/DAVIS"
 EVAL_DAVIS=1
-DAVIS_GT_ROOT="${ROOT_DIR}/DAVIS"
+DAVIS_GT_ROOT="${ROOT_DIR}/data/DAVIS"
 DAVIS_TASK="unsupervised"
 PART_LABEL="part2"
 GT_MASK_DIR=""
@@ -78,16 +78,24 @@ while [[ $# -gt 0 ]]; do
       echo "Unknown argument: $1"
       echo "Usage:"
       echo "  Video mode: $0 --video /path/to/video.mp4"
-      echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
+      echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/data/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
       exit 1
       ;;
   esac
 done
 
+# Ensure DAVIS_INPUT_ROOT and DAVIS_GT_ROOT are absolute paths
+if [[ "${DAVIS_INPUT_ROOT}" != /* ]]; then
+  DAVIS_INPUT_ROOT="${ROOT_DIR}/${DAVIS_INPUT_ROOT}"
+fi
+if [[ "${DAVIS_GT_ROOT}" != /* ]]; then
+  DAVIS_GT_ROOT="${ROOT_DIR}/${DAVIS_GT_ROOT}"
+fi
+
 if [[ -z "${VIDEO_PATH}" && -z "${DAVIS_SEQ}" ]]; then
   echo "Usage:"
   echo "  Video mode: $0 --video /path/to/video.mp4"
-  echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
+  echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/data/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
   exit 1
 fi
 
@@ -179,18 +187,10 @@ fi
 
 mkdir -p "${OUTPUTS_DIR}"
 
-# Ensure DAVIS_INPUT_ROOT and DAVIS_GT_ROOT are absolute paths
-if [[ "${DAVIS_INPUT_ROOT}" != /* ]]; then
-  DAVIS_INPUT_ROOT="${ROOT_DIR}/${DAVIS_INPUT_ROOT}"
-fi
-if [[ "${DAVIS_GT_ROOT}" != /* ]]; then
-  DAVIS_GT_ROOT="${ROOT_DIR}/${DAVIS_GT_ROOT}"
-fi
-
 if [[ "${MODE}" == "video" ]]; then
   echo "[1/8] Preprocessing video (split frames + first-frame YOLO mask) in conda env: ${YOLO_ENV}"
   cd "${ROOT_DIR}"
-  conda run -n "${YOLO_ENV}" python "${ROOT_DIR}/pipeline_yolosam2/sam2_preprocess.py" \
+  conda run -n "${YOLO_ENV}" python "${ROOT_DIR}/pipelines/yolosam2/sam2_preprocess.py" \
     --root_dir "${ROOT_DIR}" \
     --video "${VIDEO_PATH}"
 else
@@ -204,7 +204,7 @@ else
     exit 1
   fi
 
-  FIRST_MASK_SCRIPT="${ROOT_DIR}/pipeline_yolosam2/gen_first_mask.py"
+  FIRST_MASK_SCRIPT="${ROOT_DIR}/pipelines/yolosam2/gen_first_mask.py"
   conda run -n "${YOLO_ENV}" python "${FIRST_MASK_SCRIPT}" \
     --first_frame "${FIRST_FRAME}" \
     --model_path "${ROOT_DIR}/baseline/yolov8n-seg.pt" \
@@ -243,7 +243,7 @@ conda run -n "${SAM2_ENV}" python tools/vos_inference.py \
 
 echo "[4/8] Converting SAM2 masks to ProPainter binary mask format (0/255, L mode)..."
 cd "${ROOT_DIR}"
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_yolosam2/sam2_postprocess.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/yolosam2/sam2_postprocess.py" \
   --root_dir "${ROOT_DIR}" \
   --output_root "${OUTPUTS_DIR}" \
   --video_name "${VIDEO_NAME}" \
@@ -293,7 +293,7 @@ conda run -n "${PROPAINTER_ENV}" python inference_propainter.py \
   --save_frames
 
 echo "[8/8] Exporting 5 final inpainted frames..."
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_yolosam2/sam2_postprocess.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/yolosam2/sam2_postprocess.py" \
   --root_dir "${ROOT_DIR}" \
   --output_root "${OUTPUTS_DIR}" \
   --video_name "${VIDEO_NAME}" \
@@ -320,7 +320,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
     exit 1
   fi
 
-    DAVIS_CONVERT_SCRIPT="${ROOT_DIR}/pipeline_yolosam2/prepare_davis_eval_masks.py"
+    DAVIS_CONVERT_SCRIPT="${ROOT_DIR}/pipelines/yolosam2/prepare_davis_eval_masks.py"
     conda run -n "${PROPAINTER_ENV}" python "${DAVIS_CONVERT_SCRIPT}" \
     --src_dir "${EVAL_MASK_SRC_DIR}" \
     --dst_dir "${DAVIS_EVAL_SEQ_DIR}" \
@@ -379,7 +379,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
   printf "%s\n" "${VIDEO_NAME}" > "${DAVIS_EVAL_SUBSET_ROOT}/ImageSets/2017/val.txt"
   GT_MASK_DIR_FOR_METRICS="${GT_SEQ_DIR}"
 
-  cd "${ROOT_DIR}/davis2017-evaluation"
+  cd "${ROOT_DIR}/external/davis2017-evaluation"
   conda run -n "${DAVIS_ENV}" python evaluation_method.py \
     --task "${DAVIS_TASK}" \
     --set val \

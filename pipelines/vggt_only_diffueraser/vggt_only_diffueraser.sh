@@ -1,29 +1,28 @@
 #!/usr/bin/env bash
+# VGGT4D per-frame dynamic masks (no SAM3 / Track-Anything) -> postprocess -> DiffuEraser.
+# For baseline comparison when motion-based VGGT signal is weak (e.g. nearly static targets).
 set -euo pipefail
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-SAM3_ENV="${SAM3_ENV:-sam3}"
 VGGT_ENV="${VGGT_ENV:-vggt}"
 PREPROCESS_ENV="${PREPROCESS_ENV:-sam3}"
 PROPAINTER_ENV="${PROPAINTER_ENV:-propainter}"
 DIFFUERASER_ENV="${DIFFUERASER_ENV:-diffueraser}"
 DAVIS_ENV="${DAVIS_ENV:-davis}"
 
-SAM3_DIR="${ROOT_DIR}/external/sam3"
 VGGT_DIR="${ROOT_DIR}/external/VGGT4D"
 DIFFUERASER_DIR="${ROOT_DIR}/external/DiffuEraser"
 INPUTS_DIR="${ROOT_DIR}/data/inputs"
+VGGT_MASKS_PY="${ROOT_DIR}/pipelines/vggt_only_diffueraser/vggt_dynamic_masks_to_framewise.py"
 
 DIFFUERASER_WEIGHTS_ROOT="${DIFFUERASER_WEIGHTS_ROOT:-${DIFFUERASER_DIR}/weights}"
 DIFFUERASER_BASE_MODEL="${DIFFUERASER_BASE_MODEL:-${DIFFUERASER_WEIGHTS_ROOT}/stable-diffusion-v1-5}"
 DIFFUERASER_VAE="${DIFFUERASER_VAE:-${DIFFUERASER_WEIGHTS_ROOT}/sd-vae-ft-mse}"
 DIFFUERASER_MODEL="${DIFFUERASER_MODEL:-${DIFFUERASER_WEIGHTS_ROOT}/diffuEraser}"
 DIFFUERASER_PROPAINTER="${DIFFUERASER_PROPAINTER:-${DIFFUERASER_WEIGHTS_ROOT}/propainter}"
-
-SAM3_CHECKPOINT="${SAM3_CHECKPOINT:-${ROOT_DIR}/external/sam3/checkpoints/sam3.pt}"
 
 VIDEO_PATH=""
 DAVIS_SEQ=""
@@ -35,139 +34,98 @@ PART_LABEL="part3"
 GT_MASK_DIR=""
 GT_VIDEO=""
 GT_FRAMES_DIR=""
-SAM3_BASE_VIDEO_DIR=""
+
+VGGT_THRESHOLD_SCALE="${VGGT_THRESHOLD_SCALE:-0.7}"
+VGGT_MAX_FRAMES="${VGGT_MAX_FRAMES:-20}"
+VGGT_CHUNK_SIZE="${VGGT_CHUNK_SIZE:-20}"
+VGGT_ALIGN_TAIL="${VGGT_ALIGN_TAIL:-hold_last}"
+
+usage() {
+	cat <<EOF
+Usage:
+  Video: $0 --video /path/to/video.mp4 [--scale 0.5] [--vggt_max_frames 20|100|all|0] [--vggt_chunk_size 20]
+  DAVIS: $0 --davis_seq bike-packing [--davis_input_root data/DAVIS] [--eval_davis 1|0] [--scale 0.5] [--vggt_max_frames all] ...
+
+Pipeline: VGGT4D -> align dynamic_mask_* to every frame -> postprocess (viz) -> DiffuEraser.
+
+  --scale FLOAT              Same as --dyn_threshold_scale: passed to demo_vggt4d.py as --dyn_threshold_scale (default 0.7).
+  --dyn_threshold_scale FLOAT   Alias of --scale (matches other vggt_* pipelines).
+  --vggt_align_tail hold_last|zeros   When VGGT ran on fewer frames than the clip: repeat last VGGT mask or zeros (default ${VGGT_ALIGN_TAIL})
+  Env: VGGT_THRESHOLD_SCALE, VGGT_MAX_FRAMES, VGGT_CHUNK_SIZE, VGGT_ALIGN_TAIL
+EOF
+}
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
-		--video)
-			VIDEO_PATH="$2"
-			shift 2
-			;;
-		--davis_seq)
-			DAVIS_SEQ="$2"
-			shift 2
-			;;
-		--davis_input_root)
-			DAVIS_INPUT_ROOT="$2"
-			shift 2
-			;;
-		--eval_davis)
-			EVAL_DAVIS="$2"
-			shift 2
-			;;
-		--davis_gt_root)
-			DAVIS_GT_ROOT="$2"
-			shift 2
-			;;
-		--davis_task)
-			DAVIS_TASK="$2"
-			shift 2
-			;;
-		--dyn_threshold_scale)
-			VGGT_THRESHOLD_SCALE="$2"
-			shift 2
-			;;
-		--vggt_max_frames)
-			VGGT_MAX_FRAMES="$2"
-			shift 2
-			;;
-		--vggt_chunk_size)
-			VGGT_CHUNK_SIZE="$2"
-			shift 2
-			;;
-		--part_label)
-			PART_LABEL="$2"
-			shift 2
-			;;
-		--gt_mask_dir)
-			GT_MASK_DIR="$2"
-			shift 2
-			;;
-		--gt_video)
-			GT_VIDEO="$2"
-			shift 2
-			;;
-		--gt_frames_dir)
-			GT_FRAMES_DIR="$2"
-			shift 2
-			;;
-		*)
-			echo "Unknown argument: $1"
-			echo "Usage:"
-			echo "  Video mode: $0 --video /path/to/video.mp4 [--dyn_threshold_scale 0.7] [--vggt_max_frames 20|100|all|0] [--vggt_chunk_size 20]"
-			echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/data/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised] [--dyn_threshold_scale 0.7] [--vggt_max_frames 20|100|all|0] [--vggt_chunk_size 20]"
-			exit 1
-			;;
+		--video) VIDEO_PATH="$2"; shift 2 ;;
+		--davis_seq) DAVIS_SEQ="$2"; shift 2 ;;
+		--davis_input_root) DAVIS_INPUT_ROOT="$2"; shift 2 ;;
+		--eval_davis) EVAL_DAVIS="$2"; shift 2 ;;
+		--davis_gt_root) DAVIS_GT_ROOT="$2"; shift 2 ;;
+		--davis_task) DAVIS_TASK="$2"; shift 2 ;;
+		--scale|--dyn_threshold_scale) VGGT_THRESHOLD_SCALE="$2"; shift 2 ;;
+		--vggt_max_frames) VGGT_MAX_FRAMES="$2"; shift 2 ;;
+		--vggt_chunk_size) VGGT_CHUNK_SIZE="$2"; shift 2 ;;
+		--vggt_align_tail) VGGT_ALIGN_TAIL="$2"; shift 2 ;;
+		--part_label) PART_LABEL="$2"; shift 2 ;;
+		--gt_mask_dir) GT_MASK_DIR="$2"; shift 2 ;;
+		--gt_video) GT_VIDEO="$2"; shift 2 ;;
+		--gt_frames_dir) GT_FRAMES_DIR="$2"; shift 2 ;;
+		-h|--help) usage; exit 0 ;;
+		*) echo "Unknown: $1"; usage; exit 1 ;;
 	esac
 done
 
-# Ensure DAVIS_INPUT_ROOT and DAVIS_GT_ROOT are absolute paths
 if [[ "${DAVIS_INPUT_ROOT}" != /* ]]; then
-  DAVIS_INPUT_ROOT="${ROOT_DIR}/${DAVIS_INPUT_ROOT}"
+	DAVIS_INPUT_ROOT="${ROOT_DIR}/${DAVIS_INPUT_ROOT}"
 fi
 if [[ "${DAVIS_GT_ROOT}" != /* ]]; then
-  DAVIS_GT_ROOT="${ROOT_DIR}/${DAVIS_GT_ROOT}"
+	DAVIS_GT_ROOT="${ROOT_DIR}/${DAVIS_GT_ROOT}"
 fi
 
 if [[ -z "${VIDEO_PATH}" && -z "${DAVIS_SEQ}" ]]; then
-	echo "Usage:"
-	echo "  Video mode: $0 --video /path/to/video.mp4 [--dyn_threshold_scale 0.7] [--vggt_max_frames 20|100|all|0] [--vggt_chunk_size 20]"
-	echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/data/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised] [--dyn_threshold_scale 0.7] [--vggt_max_frames 20|100|all|0] [--vggt_chunk_size 20]"
+	usage
 	exit 1
 fi
-
 if [[ -n "${VIDEO_PATH}" && -n "${DAVIS_SEQ}" ]]; then
-	echo "ERROR: please provide either --video or --davis_seq, not both"
+	echo "ERROR: provide either --video or --davis_seq"
 	exit 1
 fi
-
 if [[ "${DAVIS_TASK}" != "semi-supervised" && "${DAVIS_TASK}" != "unsupervised" ]]; then
-	echo "ERROR: --davis_task must be either semi-supervised or unsupervised"
+	echo "ERROR: --davis_task must be semi-supervised or unsupervised"
 	exit 1
 fi
-
-if [[ ! -f "${SAM3_CHECKPOINT}" ]]; then
-	echo "ERROR: SAM3 checkpoint not found: ${SAM3_CHECKPOINT}"
-	echo "Set SAM3_CHECKPOINT=/absolute/path/to/local_sam3.pt"
+if [[ ! -d "${VGGT_DIR}" ]]; then
+	echo "ERROR: VGGT4D not found: ${VGGT_DIR}"
+	exit 1
+fi
+if [[ ! -f "${VGGT_MASKS_PY}" ]]; then
+	echo "ERROR: missing ${VGGT_MASKS_PY}"
 	exit 1
 fi
 
 if [[ -n "${VIDEO_PATH}" ]]; then
 	MODE="video"
 	if [[ ! -f "${VIDEO_PATH}" ]]; then
-		echo "ERROR: video file not found: ${VIDEO_PATH}"
+		echo "ERROR: video not found: ${VIDEO_PATH}"
 		exit 1
 	fi
 	VIDEO_NAME="$(basename "${VIDEO_PATH}")"
 	VIDEO_NAME="${VIDEO_NAME%.*}"
 	VIDEO_DIR="${INPUTS_DIR}/${VIDEO_NAME}"
 	OLD_MASK_DIR="${INPUTS_DIR}/${VIDEO_NAME}_mask"
-	SAM3_BASE_VIDEO_DIR="${INPUTS_DIR}"
-	OUTPUTS_DIR="${ROOT_DIR}/outputs/vggtsam3_diffueraser/${VIDEO_NAME}"
-	
-	if [[ ! -d "${VIDEO_DIR}" ]]; then
-		echo "   Extracting frames from video ${VIDEO_PATH}..."
-		mkdir -p "${VIDEO_DIR}"
-		ffmpeg -i "${VIDEO_PATH}" -vf "scale=ceil(iw/2)*2:ceil(ih/2)*2" "${VIDEO_DIR}/%05d.jpg" -y
-		echo "   Frames extracted to ${VIDEO_DIR}"
-	fi
+	OUTPUTS_DIR="${ROOT_DIR}/outputs/vggt_only_diffueraser/${VIDEO_NAME}"
 else
 	MODE="davis"
 	VIDEO_NAME="${DAVIS_SEQ}"
-
 	if [[ -d "${DAVIS_INPUT_ROOT}/JPEGImages/480p/${VIDEO_NAME}" ]]; then
 		VIDEO_DIR="${DAVIS_INPUT_ROOT}/JPEGImages/480p/${VIDEO_NAME}"
-		SAM3_BASE_VIDEO_DIR="${DAVIS_INPUT_ROOT}/JPEGImages/480p"
 	elif [[ -d "${DAVIS_INPUT_ROOT}/${VIDEO_NAME}" ]]; then
 		VIDEO_DIR="${DAVIS_INPUT_ROOT}/${VIDEO_NAME}"
-		SAM3_BASE_VIDEO_DIR="${DAVIS_INPUT_ROOT}"
 	else
-		echo "ERROR: DAVIS sequence not found in either:"
-		echo "  ${DAVIS_INPUT_ROOT}/JPEGImages/480p/${VIDEO_NAME}"
-		echo "  ${DAVIS_INPUT_ROOT}/${VIDEO_NAME}"
+		echo "ERROR: DAVIS sequence not found: ${VIDEO_NAME}"
 		exit 1
 	fi
-
 	if [[ -d "${DAVIS_INPUT_ROOT}/Annotations/480p/${VIDEO_NAME}" ]]; then
 		OLD_MASK_DIR="${DAVIS_INPUT_ROOT}/Annotations/480p/${VIDEO_NAME}"
 	elif [[ -d "${DAVIS_INPUT_ROOT}/Annotations_unsupervised/480p/${VIDEO_NAME}" ]]; then
@@ -175,8 +133,7 @@ else
 	else
 		OLD_MASK_DIR="${DAVIS_INPUT_ROOT}/${VIDEO_NAME}_mask"
 	fi
-
-	OUTPUTS_DIR="${ROOT_DIR}/outputs/vggtsam3_diffueraser_davis/${VIDEO_NAME}"
+	OUTPUTS_DIR="${ROOT_DIR}/outputs/vggt_only_diffueraser_davis/${VIDEO_NAME}"
 fi
 
 VGGT_INPUT_ROOT="${OUTPUTS_DIR}/vggt_input"
@@ -184,18 +141,14 @@ VGGT_SCENE_INPUT="${VGGT_INPUT_ROOT}/${VIDEO_NAME}"
 VGGT_OUTPUT_ROOT="${OUTPUTS_DIR}/vggt4d_outputs"
 VGGT_SCENE_OUTPUT="${VGGT_OUTPUT_ROOT}/${VIDEO_NAME}"
 
-TMP_INPUT_MASK_DIR="${OUTPUTS_DIR}/tmp_sam3_input_masks"
-TMP_RAW_MASK_DIR="${OUTPUTS_DIR}/tmp_sam3_masks_raw"
-NEW_MASK_DIR="${OUTPUTS_DIR}/${VIDEO_NAME}_mask_sam3"
-VIDEO_LIST_FILE="${OUTPUTS_DIR}/video_list.txt"
-
-VIS_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_sam3_vis"
+RAW_MASK_DIR="${OUTPUTS_DIR}/tmp_vggt_only_raw/${VIDEO_NAME}"
+NEW_MASK_DIR="${OUTPUTS_DIR}/${VIDEO_NAME}_mask_vggt_only"
+VIS_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_vggt_only_vis"
 SEG_DEMO_DIR="${VIS_ROOT}/seg_demo"
 MASK_COMPARE_DIR="${VIS_ROOT}/mask_compare"
 INPAINT_5_DIR="${VIS_ROOT}/inpaint_5frames"
 MASK_VIDEO_PATH="${VIS_ROOT}/mask_overlay.mp4"
 
-# DiffuEraser writes videos (and optional priori) directly under this root — no per-sequence subfolder.
 DIFFUERASER_OUT_ROOT="${OUTPUTS_DIR}/${VIDEO_NAME}_diffueraser"
 DIFFUERASER_FRAMES_DIR="${DIFFUERASER_OUT_ROOT}/frames"
 DIFFUERASER_VIDEO_PATH="${DIFFUERASER_OUT_ROOT}/diffueraser_result.mp4"
@@ -216,7 +169,7 @@ mkdir -p "${OUTPUTS_DIR}"
 
 if [[ "${MODE}" == "video" ]]; then
 	if [[ ! -d "${VIDEO_DIR}" ]]; then
-		echo "[1/9] Splitting input video into frames in conda env: ${PREPROCESS_ENV}"
+		echo "[1/8] Splitting input video in conda env: ${PREPROCESS_ENV}"
 		cd "${ROOT_DIR}"
 		conda run -n "${PREPROCESS_ENV}" python "${ROOT_DIR}/pipelines/yolosam2/sam2_preprocess.py" \
 			--root_dir "${ROOT_DIR}" \
@@ -224,18 +177,18 @@ if [[ "${MODE}" == "video" ]]; then
 	fi
 fi
 
-echo "[2/9] Preparing VGGT4D scene input"
+echo "[2/8] Preparing VGGT4D scene input"
 rm -rf "${VGGT_INPUT_ROOT}"
 mkdir -p "${VGGT_INPUT_ROOT}"
-ln -s "${VIDEO_DIR}" "${VGGT_SCENE_INPUT}"
+ln -sfn "${VIDEO_DIR}" "${VGGT_SCENE_INPUT}"
 
-echo "[3/9] Running VGGT4D dynamic mask extraction in conda env: ${VGGT_ENV}"
+echo "[3/8] Running VGGT4D in conda env: ${VGGT_ENV}"
 cd "${ROOT_DIR}"
 
 FRAME_LIST=( $(find "${VIDEO_DIR}" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.jpeg' -o -name '*.png' \) | sort) )
 TOTAL_FRAMES="${#FRAME_LIST[@]}"
 if [[ "${TOTAL_FRAMES}" -eq 0 ]]; then
-	echo "ERROR: no frames found in ${VIDEO_DIR}"
+	echo "ERROR: no frames in ${VIDEO_DIR}"
 	exit 1
 fi
 
@@ -245,14 +198,14 @@ VGGT_MAX_FRAMES="${VGGT_MAX_FRAMES:-20}"
 VMF_LC="$(printf '%s' "${VGGT_MAX_FRAMES}" | tr '[:upper:]' '[:lower:]')"
 if [[ "${VMF_LC}" == "all" ]] || [[ "${VGGT_MAX_FRAMES}" == "0" ]]; then
 	N_FRAMES="${TOTAL_FRAMES}"
-	echo "INFO: VGGT init mask will merge dynamic masks from all ${N_FRAMES} frames (vggt_max_frames=all)."
+	echo "INFO: VGGT on all ${N_FRAMES} frames (vggt_max_frames=all)."
 elif [[ "${TOTAL_FRAMES}" -gt "${VGGT_MAX_FRAMES}" ]]; then
 	N_FRAMES="${VGGT_MAX_FRAMES}"
 	FRAME_LIST=("${FRAME_LIST[@]:0:${N_FRAMES}}")
-	echo "INFO: VGGT init uses first ${N_FRAMES} of ${TOTAL_FRAMES} frames (cap vggt_max_frames=${VGGT_MAX_FRAMES})."
+	echo "INFO: VGGT on first ${N_FRAMES} of ${TOTAL_FRAMES} frames (cap=${VGGT_MAX_FRAMES})."
 else
 	N_FRAMES="${TOTAL_FRAMES}"
-	echo "INFO: VGGT init uses all ${N_FRAMES} frames (sequence shorter than vggt_max_frames=${VGGT_MAX_FRAMES})."
+	echo "INFO: VGGT on all ${N_FRAMES} frames (clip shorter than cap=${VGGT_MAX_FRAMES})."
 fi
 
 rm -rf "${VGGT_OUTPUT_ROOT}" "${OUTPUTS_DIR}/vggt_chunks"
@@ -264,100 +217,64 @@ while [[ "${START}" -lt "${N_FRAMES}" ]]; do
 	if [[ "${END}" -gt "${N_FRAMES}" ]]; then
 		END="${N_FRAMES}"
 	fi
-
 	CHUNK_TAG="${START}_${END}"
 	CHUNK_ROOT="${OUTPUTS_DIR}/vggt_chunks/chunk_${CHUNK_TAG}"
 	CHUNK_INPUT_ROOT="${CHUNK_ROOT}/input"
 	CHUNK_SCENE_INPUT="${CHUNK_INPUT_ROOT}/${VIDEO_NAME}"
 	CHUNK_OUTPUT_ROOT="${CHUNK_ROOT}/output"
 	CHUNK_SCENE_OUTPUT="${CHUNK_OUTPUT_ROOT}/${VIDEO_NAME}"
-
 	mkdir -p "${CHUNK_SCENE_INPUT}"
-
 	I="${START}"
 	while [[ "${I}" -lt "${END}" ]]; do
 		FRAME_PATH="${FRAME_LIST[${I}]}"
 		FRAME_NAME="$(basename "${FRAME_PATH}")"
-		ln -s "${FRAME_PATH}" "${CHUNK_SCENE_INPUT}/${FRAME_NAME}"
+		ln -sfn "${FRAME_PATH}" "${CHUNK_SCENE_INPUT}/${FRAME_NAME}"
 		I=$((I + 1))
 	done
-
 	echo "  Chunk ${START}:${END} (threshold_scale=${VGGT_THRESHOLD_SCALE})"
 	cd "${VGGT_DIR}"
 	conda run -n "${VGGT_ENV}" python demo_vggt4d.py \
 		--input_dir "${CHUNK_INPUT_ROOT}" \
 		--output_dir "${CHUNK_OUTPUT_ROOT}" \
 		--dyn_threshold_scale "${VGGT_THRESHOLD_SCALE}"
-
 	if [[ ! -d "${CHUNK_SCENE_OUTPUT}" ]]; then
-		echo "ERROR: missing chunk output dir: ${CHUNK_SCENE_OUTPUT}"
+		echo "ERROR: missing chunk output: ${CHUNK_SCENE_OUTPUT}"
 		exit 1
 	fi
-
 	LOCAL_MASKS=( $(find "${CHUNK_SCENE_OUTPUT}" -maxdepth 1 -type f -name 'dynamic_mask_*.png' | sort) )
 	LOCAL_N="${#LOCAL_MASKS[@]}"
 	EXPECTED_N=$((END - START))
 	if [[ "${LOCAL_N}" -ne "${EXPECTED_N}" ]]; then
-		echo "ERROR: chunk mask count mismatch for ${CHUNK_TAG}: got ${LOCAL_N}, expected ${EXPECTED_N}"
+		echo "ERROR: mask count mismatch ${CHUNK_TAG}: got ${LOCAL_N}, expected ${EXPECTED_N}"
 		exit 1
 	fi
-
 	J=0
 	while [[ "${J}" -lt "${LOCAL_N}" ]]; do
 		GLOBAL_IDX=$((START + J))
 		cp -f "${LOCAL_MASKS[${J}]}" "${VGGT_SCENE_OUTPUT}/dynamic_mask_$(printf '%04d' "${GLOBAL_IDX}").png"
 		J=$((J + 1))
 	done
-
 	START="${END}"
 done
+echo "VGGT4D finished (${N_FRAMES} frames)."
 
-echo "VGGT4D chunked inference finished (${N_FRAMES} frames)."
-
-if [[ ! -d "${VGGT_SCENE_OUTPUT}" ]]; then
-	echo "ERROR: VGGT4D output scene not found: ${VGGT_SCENE_OUTPUT}"
-	exit 1
-fi
-
-echo "[4/9] Building max-area indexed init mask from VGGT4D output"
-rm -rf "${TMP_INPUT_MASK_DIR}"
-mkdir -p "${TMP_INPUT_MASK_DIR}/${VIDEO_NAME}"
-INIT_MASK_DIR="${TMP_INPUT_MASK_DIR}/${VIDEO_NAME}"
+echo "[4/8] Aligning VGGT dynamic masks to full frame list (tail_policy=${VGGT_ALIGN_TAIL})"
+rm -rf "$(dirname "${RAW_MASK_DIR}")"
+mkdir -p "${RAW_MASK_DIR}"
 cd "${ROOT_DIR}"
-conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/gen_first_mask_from_vggt.py" \
+conda run -n "${VGGT_ENV}" python "${VGGT_MASKS_PY}" \
 	--vggt_scene_output "${VGGT_SCENE_OUTPUT}" \
-	--output_dir "${INIT_MASK_DIR}" \
+	--frame_dir "${VIDEO_DIR}" \
+	--output_raw_dir "${RAW_MASK_DIR}" \
 	--threshold 0 \
-	--merge_all
+	--tail_policy "${VGGT_ALIGN_TAIL}"
 
-INIT_MASK_COUNT="$(find "${INIT_MASK_DIR}" -maxdepth 1 -type f -name '*.png' | wc -l | tr -d ' ')"
-if [[ "${INIT_MASK_COUNT}" == "0" ]]; then
-	echo "ERROR: init mask was not created in ${INIT_MASK_DIR}"
-	exit 1
-fi
+rm -rf "${NEW_MASK_DIR}"
+mkdir -p "${SEG_DEMO_DIR}" "${MASK_COMPARE_DIR}" "${INPAINT_5_DIR}" "${DIFFUERASER_FRAMES_DIR}"
 
-echo "[5/9] Running SAM3 mask propagation with local checkpoint in conda env: ${SAM3_ENV}"
-printf "%s\n" "${VIDEO_NAME}" > "${VIDEO_LIST_FILE}"
-rm -rf "${TMP_RAW_MASK_DIR}"
-mkdir -p "${TMP_RAW_MASK_DIR}"
-cd "${ROOT_DIR}"
-conda run -n "${SAM3_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/sam3_vos_inference.py" \
-	--sam3_checkpoint "${SAM3_CHECKPOINT}" \
-	--base_video_dir "${SAM3_BASE_VIDEO_DIR}" \
-	--input_mask_dir "${TMP_INPUT_MASK_DIR}" \
-	--video_list_file "${VIDEO_LIST_FILE}" \
-	--output_mask_dir "${TMP_RAW_MASK_DIR}" \
-	--score_thresh 0.0
-
-RAW_SEQ_DIR="${TMP_RAW_MASK_DIR}/${VIDEO_NAME}"
-if [[ ! -d "${RAW_SEQ_DIR}" ]]; then
-	echo "ERROR: SAM3 output mask directory missing: ${RAW_SEQ_DIR}"
-	exit 1
-fi
-
-echo "[6/9] Converting SAM3 masks and rendering demos"
+echo "[5/8] Mask demos (postprocess)"
 conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/postprocess_sam3.py" \
-	--raw_mask_dir "${RAW_SEQ_DIR}" \
+	--raw_mask_dir "${RAW_MASK_DIR}" \
 	--new_mask_dir "${NEW_MASK_DIR}" \
 	--frame_dir "${VIDEO_DIR}" \
 	--old_mask_dir "${OLD_MASK_DIR}" \
@@ -369,13 +286,12 @@ conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/postpr
 	--mask_video_path "${MASK_VIDEO_PATH}"
 
 if [[ ! -d "${NEW_MASK_DIR}" ]]; then
-	echo "ERROR: missing mask directory ${NEW_MASK_DIR}"
+	echo "ERROR: missing ${NEW_MASK_DIR}"
 	exit 1
 fi
 
-echo "[7/9] Running DiffuEraser inpainting in conda env: ${DIFFUERASER_ENV}"
+echo "[6/8] DiffuEraser in conda env: ${DIFFUERASER_ENV}"
 
-# If weights were not copied under external/DiffuEraser/weights/, reuse local Hugging Face Hub snapshots when present.
 diffueraser_try_hf_hub_snapshot() {
 	local varname="$1"
 	local slug="$2"
@@ -398,7 +314,7 @@ diffueraser_try_hf_hub_snapshot() {
 		fi
 	done
 	if [[ -n "${hit}" ]]; then
-		echo "INFO: Using Hugging Face Hub cache for ${varname}: ${hit}"
+		echo "INFO: HF Hub cache for ${varname}: ${hit}"
 		printf -v "${varname}" '%s' "${hit}"
 	fi
 }
@@ -407,72 +323,33 @@ diffueraser_try_hf_hub_snapshot DIFFUERASER_BASE_MODEL "models--stable-diffusion
 diffueraser_try_hf_hub_snapshot DIFFUERASER_VAE "models--stabilityai--sd-vae-ft-mse" "config.json"
 
 cd "${DIFFUERASER_DIR}"
-
-# Official layout (DiffuEraser README): weights/PCM_Weights/sd15/pcm_sd15_smallcfg_2step_converted.safetensors
-# diffueraser.py uses load_lora_weights("weights/PCM_Weights", ..., subfolder="sd15") — path is fixed to PCM_Weights.
 PCM_CANON="${DIFFUERASER_DIR}/weights/PCM_Weights"
 PCM_MISSPELLED="${DIFFUERASER_DIR}/weights/PCM_weights"
-
-if [[ -L "${PCM_CANON}" ]] && [[ ! -e "${PCM_CANON}" ]]; then
-	echo "WARN: Removing broken symlink ${PCM_CANON} (target missing). Restore weights/PCM_Weights or re-download."
+if [[ -L "${PCM_CANON}" && ! -e "${PCM_CANON}" ]]; then
 	rm -f "${PCM_CANON}"
 fi
-
-# Optional: some downloads created "PCM_weights" (wrong case). Link it to the canonical PCM_Weights name.
-if [[ ! -e "${PCM_CANON}" ]] && [[ -d "${PCM_MISSPELLED}" ]]; then
-	echo "INFO: Found weights/PCM_weights; linking to required weights/PCM_Weights"
+if [[ ! -e "${PCM_CANON}" && -d "${PCM_MISSPELLED}" ]]; then
 	ln -sfn "$(realpath "${PCM_MISSPELLED}")" "${PCM_CANON}"
 fi
-
 DIFFUERASER_PCM_LORA="${PCM_CANON}/sd15/pcm_sd15_smallcfg_2step_converted.safetensors"
-
-# If canonical path still lacks the file, search under weights/ (nested HF cache, odd folder names) and point PCM_Weights there.
 if [[ ! -f "${DIFFUERASER_PCM_LORA}" ]]; then
 	DIFFUERASER_PCM_FOUND="$(find "${DIFFUERASER_DIR}/weights" -type f -path '*/sd15/pcm_sd15_smallcfg_2step_converted.safetensors' 2>/dev/null | head -n 1)"
 	if [[ -n "${DIFFUERASER_PCM_FOUND}" ]]; then
 		DIFFUERASER_PCM_FOUND="$(realpath "${DIFFUERASER_PCM_FOUND}")"
 		PCM_REPO_ROOT="$(realpath "$(dirname "$(dirname "${DIFFUERASER_PCM_FOUND}")")")"
-		if [[ -e "${PCM_CANON}" ]] && [[ ! -L "${PCM_CANON}" ]] && [[ -d "${PCM_CANON}" ]]; then
-			echo "ERROR: ${PCM_CANON} exists as a real directory but is missing sd15/pcm_sd15_smallcfg_2step_converted.safetensors."
-			echo "       Detected valid PCM root at: ${PCM_REPO_ROOT}"
-			exit 1
-		fi
 		rm -f "${PCM_CANON}"
 		ln -sfn "${PCM_REPO_ROOT}" "${PCM_CANON}"
-		echo "INFO: ${PCM_CANON} -> ${PCM_REPO_ROOT} (PCM sd15 file was found outside the default folder name)"
 	fi
 fi
 
 DIFFUERASER_WEIGHT_ERRORS=""
-if [[ ! -d "${DIFFUERASER_BASE_MODEL}" ]]; then
-	DIFFUERASER_WEIGHT_ERRORS+=$'\n'"  - SD1.5 base (directory): ${DIFFUERASER_BASE_MODEL}"
-fi
-if [[ ! -d "${DIFFUERASER_VAE}" ]]; then
-	DIFFUERASER_WEIGHT_ERRORS+=$'\n'"  - VAE (directory): ${DIFFUERASER_VAE}"
-fi
-if [[ ! -d "${DIFFUERASER_MODEL}" ]]; then
-	DIFFUERASER_WEIGHT_ERRORS+=$'\n'"  - DiffuEraser checkpoint (directory): ${DIFFUERASER_MODEL}"
-fi
-if [[ ! -d "${DIFFUERASER_PROPAINTER}" ]] || [[ ! -f "${DIFFUERASER_PROPAINTER}/ProPainter.pth" ]]; then
-	DIFFUERASER_WEIGHT_ERRORS+=$'\n'"  - ProPainter prior weights (dir + ProPainter.pth): ${DIFFUERASER_PROPAINTER}"
-fi
-if [[ ! -f "${DIFFUERASER_PCM_LORA}" ]]; then
-	DIFFUERASER_WEIGHT_ERRORS+=$'\n'"  - PCM 2-step LoRA file: ${DIFFUERASER_PCM_LORA}"
-fi
-
+[[ -d "${DIFFUERASER_BASE_MODEL}" ]] || DIFFUERASER_WEIGHT_ERRORS+=$'\n'"  - SD1.5: ${DIFFUERASER_BASE_MODEL}"
+[[ -d "${DIFFUERASER_VAE}" ]] || DIFFUERASER_WEIGHT_ERRORS+=$'\n'"  - VAE: ${DIFFUERASER_VAE}"
+[[ -d "${DIFFUERASER_MODEL}" ]] || DIFFUERASER_WEIGHT_ERRORS+=$'\n'"  - DiffuEraser: ${DIFFUERASER_MODEL}"
+[[ -d "${DIFFUERASER_PROPAINTER}" && -f "${DIFFUERASER_PROPAINTER}/ProPainter.pth" ]] || DIFFUERASER_WEIGHT_ERRORS+=$'\n'"  - ProPainter: ${DIFFUERASER_PROPAINTER}"
+[[ -f "${DIFFUERASER_PCM_LORA}" ]] || DIFFUERASER_WEIGHT_ERRORS+=$'\n'"  - PCM LoRA: ${DIFFUERASER_PCM_LORA}"
 if [[ -n "${DIFFUERASER_WEIGHT_ERRORS}" ]]; then
-	echo "ERROR: DiffuEraser pretrained assets are missing or incomplete:${DIFFUERASER_WEIGHT_ERRORS}"
-	echo ""
-	echo "Expected layout (or set DIFFUERASER_* env vars to your own paths): ${DIFFUERASER_WEIGHTS_ROOT}"
-	echo "Documentation: ${DIFFUERASER_DIR}/weights/README.md"
-	echo ""
-	echo "Example downloads with the Hugging Face CLI (large downloads; SD full repo is ~30GB, minimal inference subset ~4GB per upstream README):"
-	echo "  huggingface-cli download stable-diffusion-v1-5/stable-diffusion-v1-5 --local-dir \"${DIFFUERASER_WEIGHTS_ROOT}/stable-diffusion-v1-5\""
-	echo "  huggingface-cli download stabilityai/sd-vae-ft-mse --local-dir \"${DIFFUERASER_WEIGHTS_ROOT}/sd-vae-ft-mse\""
-	echo "  huggingface-cli download wangfuyun/PCM_Weights --local-dir \"${DIFFUERASER_WEIGHTS_ROOT}/PCM_Weights\""
-	echo "ProPainter v0.1.0 weights (raft-things.pth, recurrent_flow_completion.pth, ProPainter.pth) from the official release must live under:"
-	echo "  ${DIFFUERASER_PROPAINTER}"
-	echo "DiffuEraser UNet/BrushNet: ${DIFFUERASER_DIR}/README.md (Hugging Face / ModelScope links)."
+	echo "ERROR: DiffuEraser weights missing:${DIFFUERASER_WEIGHT_ERRORS}"
 	exit 1
 fi
 
@@ -494,13 +371,11 @@ DIFFUERASER_ALL_MASKS=( $(find "${NEW_MASK_DIR}" -maxdepth 1 -type f -name '*.pn
 DIFFUERASER_FRAME_COUNT="${#DIFFUERASER_ALL_FRAMES[@]}"
 DIFFUERASER_MASK_COUNT="${#DIFFUERASER_ALL_MASKS[@]}"
 if [[ "${DIFFUERASER_FRAME_COUNT}" -eq 0 || "${DIFFUERASER_MASK_COUNT}" -eq 0 ]]; then
-	echo "ERROR: DiffuEraser input frames or masks are empty"
-	echo "  frames: ${VIDEO_DIR} (${DIFFUERASER_FRAME_COUNT})"
-	echo "  masks:  ${NEW_MASK_DIR} (${DIFFUERASER_MASK_COUNT})"
+	echo "ERROR: empty frames or masks"
 	exit 1
 fi
 if [[ "${DIFFUERASER_FRAME_COUNT}" -ne "${DIFFUERASER_MASK_COUNT}" ]]; then
-	echo "WARN: DiffuEraser frame/mask count mismatch: frames=${DIFFUERASER_FRAME_COUNT}, masks=${DIFFUERASER_MASK_COUNT}; using the shorter length"
+	echo "WARN: frame/mask mismatch: ${DIFFUERASER_FRAME_COUNT} vs ${DIFFUERASER_MASK_COUNT}; using shorter"
 	if [[ "${DIFFUERASER_MASK_COUNT}" -lt "${DIFFUERASER_FRAME_COUNT}" ]]; then
 		DIFFUERASER_FRAME_COUNT="${DIFFUERASER_MASK_COUNT}"
 	fi
@@ -508,17 +383,14 @@ fi
 
 I=0
 while [[ "${I}" -lt "${DIFFUERASER_FRAME_COUNT}" ]]; do
-	ln -s "${DIFFUERASER_ALL_FRAMES[${I}]}" "${DIFFUERASER_VIDEO_FRAME_DIR}/$(printf '%05d' "${I}").jpg"
-	ln -s "${DIFFUERASER_ALL_MASKS[${I}]}" "${DIFFUERASER_MASK_FRAME_DIR}/$(printf '%05d' "${I}").png"
+	ln -sfn "${DIFFUERASER_ALL_FRAMES[${I}]}" "${DIFFUERASER_VIDEO_FRAME_DIR}/$(printf '%05d' "${I}").jpg"
+	ln -sfn "${DIFFUERASER_ALL_MASKS[${I}]}" "${DIFFUERASER_MASK_FRAME_DIR}/$(printf '%05d' "${I}").png"
 	I=$((I + 1))
 done
 
 DIFFUERASER_VIDEO_LENGTH="${DIFFUERASER_VIDEO_LENGTH:-$(awk -v n="${DIFFUERASER_FRAME_COUNT}" -v fps="${DIFFUERASER_FPS}" 'BEGIN { q = n / fps; qi = int(q); print (q > qi ? qi + 1 : qi) }')}"
-if [[ "${DIFFUERASER_VIDEO_LENGTH}" -lt 1 ]]; then
-	DIFFUERASER_VIDEO_LENGTH=1
-fi
+[[ "${DIFFUERASER_VIDEO_LENGTH}" -lt 1 ]] && DIFFUERASER_VIDEO_LENGTH=1
 
-echo "      converting frames/masks to mp4 for DiffuEraser: fps=${DIFFUERASER_FPS}, frames=${DIFFUERASER_FRAME_COUNT}, video_length=${DIFFUERASER_VIDEO_LENGTH}s"
 ffmpeg -y -loglevel error -framerate "${DIFFUERASER_FPS}" -start_number 0 \
 	-i "${DIFFUERASER_VIDEO_FRAME_DIR}/%05d.jpg" \
 	-vf "scale=ceil(iw/2)*2:ceil(ih/2)*2" \
@@ -544,23 +416,22 @@ conda run -n "${DIFFUERASER_ENV}" python run_diffueraser.py \
 	--propainter_model_dir "${DIFFUERASER_PROPAINTER}"
 
 if [[ ! -f "${DIFFUERASER_VIDEO_PATH}" ]]; then
-	echo "ERROR: DiffuEraser result video not found: ${DIFFUERASER_VIDEO_PATH}"
+	echo "ERROR: DiffuEraser output missing: ${DIFFUERASER_VIDEO_PATH}"
 	exit 1
 fi
 
 mv -f "${DIFFUERASER_VIDEO_PATH}" "${DIFFUERASER_RAW_VIDEO_PATH}"
 ffmpeg -y -loglevel error -i "${DIFFUERASER_RAW_VIDEO_PATH}" \
 	-c:v libx264 -pix_fmt yuv420p -movflags +faststart "${DIFFUERASER_VIDEO_PATH}"
-
 cp -f "${DIFFUERASER_VIDEO_PATH}" "${FINAL_VIDEO_PATH}"
 rm -rf "${DIFFUERASER_FRAMES_DIR}"
 mkdir -p "${DIFFUERASER_FRAMES_DIR}"
 ffmpeg -y -loglevel error -i "${DIFFUERASER_VIDEO_PATH}" -start_number 0 "${DIFFUERASER_FRAMES_DIR}/%05d.png"
 
-echo "[8/9] Exporting inpaint samples"
+echo "[7/8] Inpaint sample exports"
 cd "${ROOT_DIR}"
 conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/postprocess_sam3.py" \
-	--raw_mask_dir "${RAW_SEQ_DIR}" \
+	--raw_mask_dir "${RAW_MASK_DIR}" \
 	--new_mask_dir "${NEW_MASK_DIR}" \
 	--frame_dir "${VIDEO_DIR}" \
 	--old_mask_dir "${OLD_MASK_DIR}" \
@@ -572,31 +443,14 @@ conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/postpr
 	--mask_video_path "${MASK_VIDEO_PATH}"
 
 if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
-	echo "[9/9] Preparing DAVIS-evaluable masks and running DAVIS evaluation in conda env: ${DAVIS_ENV}"
+	echo "[8/8] DAVIS eval"
 	rm -rf "${DAVIS_EVAL_RESULTS_ROOT}"
 	mkdir -p "${DAVIS_EVAL_SEQ_DIR}"
-
-	EVAL_MASK_SRC_DIR="${RAW_SEQ_DIR}"
-	if [[ ! -d "${EVAL_MASK_SRC_DIR}" ]]; then
-		echo "WARN: raw indexed mask dir missing, fallback to binary mask dir: ${NEW_MASK_DIR}"
-		EVAL_MASK_SRC_DIR="${NEW_MASK_DIR}"
-	fi
-	if [[ ! -d "${EVAL_MASK_SRC_DIR}" ]]; then
-		echo "ERROR: no available eval mask source directory"
-		exit 1
-	fi
-
 	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/prepare_davis_eval_masks.py" \
-		--src_dir "${EVAL_MASK_SRC_DIR}" \
+		--src_dir "${RAW_MASK_DIR}" \
 		--dst_dir "${DAVIS_EVAL_SEQ_DIR}" \
 		--max_eval_labels 20 \
 		--binary
-
-	if [[ ! -f "${DAVIS_EVAL_SEQ_DIR}/00000.png" ]]; then
-		echo "ERROR: failed to prepare DAVIS eval masks; missing ${DAVIS_EVAL_SEQ_DIR}/00000.png"
-		exit 1
-	fi
-
 	if [[ "${DAVIS_TASK}" == "semi-supervised" ]]; then
 		ANN_FOLDER="Annotations"
 		ALT_ANN_FOLDER="Annotations_unsupervised"
@@ -604,7 +458,6 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 		ANN_FOLDER="Annotations_unsupervised"
 		ALT_ANN_FOLDER="Annotations"
 	fi
-
 	GT_SEQ_DIR="${DAVIS_GT_ROOT}/${ANN_FOLDER}/480p/${VIDEO_NAME}"
 	if [[ ! -d "${GT_SEQ_DIR}" ]]; then
 		ALT_GT_SEQ_DIR="${DAVIS_GT_ROOT}/${ALT_ANN_FOLDER}/480p/${VIDEO_NAME}"
@@ -612,73 +465,48 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 			ANN_FOLDER="${ALT_ANN_FOLDER}"
 			GT_SEQ_DIR="${ALT_GT_SEQ_DIR}"
 		else
-			echo "ERROR: ground-truth sequence not found for ${VIDEO_NAME}"
+			echo "ERROR: GT sequence missing for ${VIDEO_NAME}"
 			exit 1
 		fi
 	fi
-
 	rm -rf "${DAVIS_EVAL_SUBSET_ROOT}"
 	mkdir -p "${DAVIS_EVAL_SUBSET_ROOT}/JPEGImages/480p"
 	mkdir -p "${DAVIS_EVAL_SUBSET_ROOT}/${ANN_FOLDER}/480p"
 	mkdir -p "${DAVIS_EVAL_SUBSET_ROOT}/ImageSets/2017"
-	ln -s "${VIDEO_DIR}" "${DAVIS_EVAL_SUBSET_ROOT}/JPEGImages/480p/${VIDEO_NAME}"
-	ln -s "${GT_SEQ_DIR}" "${DAVIS_EVAL_SUBSET_ROOT}/${ANN_FOLDER}/480p/${VIDEO_NAME}"
+	ln -sfn "${VIDEO_DIR}" "${DAVIS_EVAL_SUBSET_ROOT}/JPEGImages/480p/${VIDEO_NAME}"
+	ln -sfn "${GT_SEQ_DIR}" "${DAVIS_EVAL_SUBSET_ROOT}/${ANN_FOLDER}/480p/${VIDEO_NAME}"
 	printf "%s\n" "${VIDEO_NAME}" > "${DAVIS_EVAL_SUBSET_ROOT}/ImageSets/2017/val.txt"
 	GT_MASK_DIR_FOR_METRICS="${GT_SEQ_DIR}"
-
 	cd "${ROOT_DIR}/external/davis2017-evaluation"
 	conda run -n "${DAVIS_ENV}" python evaluation_method.py \
 		--task "${DAVIS_TASK}" \
 		--set val \
 		--davis_path "${DAVIS_EVAL_SUBSET_ROOT}" \
 		--results_path "${DAVIS_EVAL_RESULTS_ROOT}"
+else
+	echo "[8/8] Skipping DAVIS eval"
 fi
 
-echo "[Metrics] Computing JM/JR and optional PSNR/SSIM"
+echo "[Metrics]"
 METRICS_DIR="${OUTPUTS_DIR}/metrics"
 METRICS_CMD=(
 	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/evaluate_metrics.py"
 	--output_dir "${METRICS_DIR}"
 	--part_label "${PART_LABEL}"
-	--experiment_name "vggt4dsam3_diffueraser"
+	--experiment_name "vggt_only_diffueraser"
 	--pred_mask_dir "${NEW_MASK_DIR}"
 	--pred_video "${FINAL_VIDEO_PATH}"
 	--pred_frames_dir "${PRED_FRAMES_DIR}"
 )
+[[ -f "${DAVIS_CSV_PATH}" ]] && METRICS_CMD+=(--davis_csv "${DAVIS_CSV_PATH}")
+[[ -n "${GT_MASK_DIR_FOR_METRICS}" ]] && METRICS_CMD+=(--gt_mask_dir "${GT_MASK_DIR_FOR_METRICS}")
+[[ -n "${GT_VIDEO}" ]] && METRICS_CMD+=(--gt_video "${GT_VIDEO}")
+[[ -n "${GT_FRAMES_DIR_FOR_METRICS}" ]] && METRICS_CMD+=(--gt_frames_dir "${GT_FRAMES_DIR_FOR_METRICS}")
+"${METRICS_CMD[@]}"
 
-if [[ -f "${DAVIS_CSV_PATH}" ]]; then
-	METRICS_CMD+=(--davis_csv "${DAVIS_CSV_PATH}")
-fi
-if [[ -n "${GT_MASK_DIR_FOR_METRICS}" ]]; then
-	METRICS_CMD+=(--gt_mask_dir "${GT_MASK_DIR_FOR_METRICS}")
-fi
-if [[ -n "${GT_VIDEO}" ]]; then
-	METRICS_CMD+=(--gt_video "${GT_VIDEO}")
-fi
-
-if [[ "${MODE}" == "davis" ]]; then
-	GT_FRAMES_DIR_FOR_METRICS="${DAVIS_INPUT_ROOT}/JPEGImages/480p/${VIDEO_NAME}"
-else
-	GT_FRAMES_DIR_FOR_METRICS="${VIDEO_DIR}"
-fi
-METRICS_CMD+=(--gt_frames_dir "${GT_FRAMES_DIR_FOR_METRICS}")
-
-"${METRICS_CMD[@]}" || echo "WARN: metrics evaluation failed"
-
-echo "Done. Outputs:"
-echo "- VGGT output scene:  ${VGGT_SCENE_OUTPUT}"
-echo "- SAM3 raw masks:     ${RAW_SEQ_DIR}"
-echo "- SAM3 binary masks:  ${NEW_MASK_DIR}"
-echo "- Segmentation demos: ${SEG_DEMO_DIR}"
-echo "- Mask comparisons:   ${MASK_COMPARE_DIR}"
-echo "- Inpaint 5 frames:   ${INPAINT_5_DIR}"
-echo "- Mask overlay video: ${MASK_VIDEO_PATH}"
-echo "- DiffuEraser input video: ${DIFFUERASER_INPUT_VIDEO_PATH}"
-echo "- DiffuEraser input mask:  ${DIFFUERASER_INPUT_MASK_PATH}"
-echo "- DiffuEraser raw result:  ${DIFFUERASER_RAW_VIDEO_PATH}"
-echo "- DiffuEraser result:      ${DIFFUERASER_VIDEO_PATH}"
-echo "- Inpaint video:      ${FINAL_VIDEO_PATH}"
-if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
-	echo "- DAVIS CSV results:  ${DAVIS_EVAL_RESULTS_ROOT}/global_results-val.csv"
-fi
-echo "- Metric summary:    ${METRICS_DIR}/metrics_summary.json"
+echo "Done (VGGT-only baseline)."
+echo "  vggt:   ${VGGT_SCENE_OUTPUT}"
+echo "  masks:  ${NEW_MASK_DIR}"
+echo "  video:  ${FINAL_VIDEO_PATH}"
+echo "  vis:    ${VIS_ROOT}"
+echo "  metrics:${METRICS_DIR}"

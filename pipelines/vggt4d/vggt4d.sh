@@ -10,15 +10,15 @@ PREPROCESS_ENV="${PREPROCESS_ENV:-sam2}"
 PROPAINTER_ENV="${PROPAINTER_ENV:-propainter}"
 DAVIS_ENV="${DAVIS_ENV:-davis}"
 
-VGGT_DIR="${ROOT_DIR}/VGGT4D"
-PROPAINTER_DIR="${ROOT_DIR}/ProPainter"
-INPUTS_DIR="${ROOT_DIR}/inputs"
+VGGT_DIR="${ROOT_DIR}/external/VGGT4D"
+PROPAINTER_DIR="${ROOT_DIR}/external/ProPainter"
+INPUTS_DIR="${ROOT_DIR}/data/inputs"
 
 VIDEO_PATH=""
 DAVIS_SEQ=""
-DAVIS_INPUT_ROOT="${ROOT_DIR}/DAVIS"
+DAVIS_INPUT_ROOT="${ROOT_DIR}/data/DAVIS"
 EVAL_DAVIS=1
-DAVIS_GT_ROOT="${ROOT_DIR}/DAVIS"
+DAVIS_GT_ROOT="${ROOT_DIR}/data/DAVIS"
 DAVIS_TASK="unsupervised"
 PART_LABEL="part2"
 GT_MASK_DIR=""
@@ -75,16 +75,24 @@ while [[ $# -gt 0 ]]; do
 			echo "Unknown argument: $1"
 			echo "Usage:"
 			echo "  Video mode: $0 --video /path/to/video.mp4"
-			echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
+			echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/data/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
 			exit 1
 			;;
 	esac
 done
 
+# Ensure DAVIS_INPUT_ROOT and DAVIS_GT_ROOT are absolute paths
+if [[ "${DAVIS_INPUT_ROOT}" != /* ]]; then
+  DAVIS_INPUT_ROOT="${ROOT_DIR}/${DAVIS_INPUT_ROOT}"
+fi
+if [[ "${DAVIS_GT_ROOT}" != /* ]]; then
+  DAVIS_GT_ROOT="${ROOT_DIR}/${DAVIS_GT_ROOT}"
+fi
+
 if [[ -z "${VIDEO_PATH}" && -z "${DAVIS_SEQ}" ]]; then
 	echo "Usage:"
 	echo "  Video mode: $0 --video /path/to/video.mp4"
-	echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
+	echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/data/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
 	exit 1
 fi
 
@@ -168,19 +176,11 @@ GT_FRAMES_DIR_FOR_METRICS="${GT_FRAMES_DIR}"
 
 mkdir -p "${OUTPUTS_DIR}"
 
-# Ensure DAVIS_INPUT_ROOT and DAVIS_GT_ROOT are absolute paths
-if [[ "${DAVIS_INPUT_ROOT}" != /* ]]; then
-  DAVIS_INPUT_ROOT="${ROOT_DIR}/${DAVIS_INPUT_ROOT}"
-fi
-if [[ "${DAVIS_GT_ROOT}" != /* ]]; then
-  DAVIS_GT_ROOT="${ROOT_DIR}/${DAVIS_GT_ROOT}"
-fi
-
 if [[ "${MODE}" == "video" ]]; then
 	if [[ ! -d "${VIDEO_DIR}" ]]; then
 		echo "[1/7] Splitting input video into frames in conda env: ${PREPROCESS_ENV}"
 		cd "${ROOT_DIR}"
-		conda run -n "${PREPROCESS_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/sam2_preprocess.py" \
+		conda run -n "${PREPROCESS_ENV}" python "${ROOT_DIR}/pipelines/vggt4d/sam2_preprocess.py" \
 			--root_dir "${ROOT_DIR}" \
 			--video "${VIDEO_PATH}"
 	fi
@@ -276,14 +276,14 @@ fi
 
 echo "[4/7] Converting VGGT dynamic masks to ProPainter/DAVIS mask format"
 cd "${ROOT_DIR}"
-conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/convert_vggt_masks.py" \
+conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/pipelines/vggt4d/convert_vggt_masks.py" \
 	--src_dir "${VGGT_SCENE_OUTPUT}" \
 	--dst_dir "${NEW_MASK_DIR}" \
 	--frame_dir "${VIDEO_DIR}" \
 	--threshold 0
 
 echo "[5/7] Rendering mask demos"
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/postprocess_vggt.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4d/postprocess_vggt.py" \
 	--frame_dir "${VIDEO_DIR}" \
 	--new_mask_dir "${NEW_MASK_DIR}" \
 	--old_mask_dir "${OLD_MASK_DIR}" \
@@ -327,7 +327,7 @@ conda run -n "${PROPAINTER_ENV}" python inference_propainter.py \
 
 echo "[7/7] Exporting inpaint samples and optional DAVIS eval"
 cd "${ROOT_DIR}"
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/postprocess_vggt.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4d/postprocess_vggt.py" \
 	--frame_dir "${VIDEO_DIR}" \
 	--new_mask_dir "${NEW_MASK_DIR}" \
 	--old_mask_dir "${OLD_MASK_DIR}" \
@@ -346,7 +346,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 	rm -rf "${DAVIS_EVAL_RESULTS_ROOT}"
 	mkdir -p "${DAVIS_EVAL_SEQ_DIR}"
 
-	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4d/prepare_davis_eval_masks_multi.py" \
+	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4d/prepare_davis_eval_masks_multi.py" \
 		--src_dir "${NEW_MASK_DIR}" \
 		--dst_dir "${DAVIS_EVAL_SEQ_DIR}" \
 		--max_eval_labels 20 \
@@ -381,7 +381,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 	printf "%s\n" "${VIDEO_NAME}" > "${DAVIS_EVAL_SUBSET_ROOT}/ImageSets/2017/val.txt"
 	GT_MASK_DIR_FOR_METRICS="${GT_SEQ_DIR}"
 
-	cd "${ROOT_DIR}/davis2017-evaluation"
+	cd "${ROOT_DIR}/external/davis2017-evaluation"
 	conda run -n "${DAVIS_ENV}" python evaluation_method.py \
 		--task "${DAVIS_TASK}" \
 		--set val \

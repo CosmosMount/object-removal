@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import sys
 from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
 from PIL import Image
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, os.pardir, os.pardir))
+SAM3_DIR = os.path.join(ROOT_DIR, "external", "sam3")
+if os.path.isdir(SAM3_DIR) and SAM3_DIR not in sys.path:
+    sys.path.insert(0, SAM3_DIR)
+
 from sam3.model_builder import build_sam3_video_model
 
 

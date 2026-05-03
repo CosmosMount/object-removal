@@ -11,18 +11,18 @@ PREPROCESS_ENV="${PREPROCESS_ENV:-sam3}"
 PROPAINTER_ENV="${PROPAINTER_ENV:-propainter}"
 DAVIS_ENV="${DAVIS_ENV:-davis}"
 
-SAM3_DIR="${ROOT_DIR}/sam3"
-VGGT_DIR="${ROOT_DIR}/VGGT4D"
-PROPAINTER_DIR="${ROOT_DIR}/ProPainter"
-INPUTS_DIR="${ROOT_DIR}/inputs"
+SAM3_DIR="${ROOT_DIR}/external/sam3"
+VGGT_DIR="${ROOT_DIR}/external/VGGT4D"
+PROPAINTER_DIR="${ROOT_DIR}/external/ProPainter"
+INPUTS_DIR="${ROOT_DIR}/data/inputs"
 
-SAM3_CHECKPOINT="${SAM3_CHECKPOINT:-${ROOT_DIR}/sam3/checkpoints/sam3.pt}"
+SAM3_CHECKPOINT="${SAM3_CHECKPOINT:-${ROOT_DIR}/external/sam3/checkpoints/sam3.pt}"
 
 VIDEO_PATH=""
 DAVIS_SEQ=""
-DAVIS_INPUT_ROOT="${ROOT_DIR}/DAVIS"
+DAVIS_INPUT_ROOT="${ROOT_DIR}/data/DAVIS"
 EVAL_DAVIS=1
-DAVIS_GT_ROOT="${ROOT_DIR}/DAVIS"
+DAVIS_GT_ROOT="${ROOT_DIR}/data/DAVIS"
 DAVIS_TASK="unsupervised"
 PART_LABEL="part3"
 GT_MASK_DIR=""
@@ -60,6 +60,14 @@ while [[ $# -gt 0 ]]; do
 			VGGT_THRESHOLD_SCALE="$2"
 			shift 2
 			;;
+		--vggt_max_frames)
+			VGGT_MAX_FRAMES="$2"
+			shift 2
+			;;
+		--vggt_chunk_size)
+			VGGT_CHUNK_SIZE="$2"
+			shift 2
+			;;
 		--part_label)
 			PART_LABEL="$2"
 			shift 2
@@ -79,17 +87,25 @@ while [[ $# -gt 0 ]]; do
 		*)
 			echo "Unknown argument: $1"
 			echo "Usage:"
-			echo "  Video mode: $0 --video /path/to/video.mp4 [--dyn_threshold_scale 0.7]"
-			echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised] [--dyn_threshold_scale 0.7]"
+			echo "  Video mode: $0 --video /path/to/video.mp4 [--dyn_threshold_scale 0.7] [--vggt_max_frames 20|100|all|0] [--vggt_chunk_size 20]"
+			echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/data/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised] [--dyn_threshold_scale 0.7] [--vggt_max_frames 20|100|all|0] [--vggt_chunk_size 20]"
 			exit 1
 			;;
 	esac
 done
 
+# Ensure DAVIS_INPUT_ROOT and DAVIS_GT_ROOT are absolute paths
+if [[ "${DAVIS_INPUT_ROOT}" != /* ]]; then
+  DAVIS_INPUT_ROOT="${ROOT_DIR}/${DAVIS_INPUT_ROOT}"
+fi
+if [[ "${DAVIS_GT_ROOT}" != /* ]]; then
+  DAVIS_GT_ROOT="${ROOT_DIR}/${DAVIS_GT_ROOT}"
+fi
+
 if [[ -z "${VIDEO_PATH}" && -z "${DAVIS_SEQ}" ]]; then
 	echo "Usage:"
-	echo "  Video mode: $0 --video /path/to/video.mp4 [--dyn_threshold_scale 0.7]"
-	echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised] [--dyn_threshold_scale 0.7]"
+	echo "  Video mode: $0 --video /path/to/video.mp4 [--dyn_threshold_scale 0.7] [--vggt_max_frames 20|100|all|0] [--vggt_chunk_size 20]"
+	echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/data/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised] [--dyn_threshold_scale 0.7] [--vggt_max_frames 20|100|all|0] [--vggt_chunk_size 20]"
 	exit 1
 fi
 
@@ -156,14 +172,6 @@ else
 	OUTPUTS_DIR="${ROOT_DIR}/outputs/vggtsam3sd_davis/${VIDEO_NAME}"
 fi
 
-# Ensure DAVIS_INPUT_ROOT and DAVIS_GT_ROOT are absolute paths
-if [[ "${DAVIS_INPUT_ROOT}" != /* ]]; then
-  DAVIS_INPUT_ROOT="${ROOT_DIR}/${DAVIS_INPUT_ROOT}"
-fi
-if [[ "${DAVIS_GT_ROOT}" != /* ]]; then
-  DAVIS_GT_ROOT="${ROOT_DIR}/${DAVIS_GT_ROOT}"
-fi
-
 VGGT_INPUT_ROOT="${OUTPUTS_DIR}/vggt_input"
 VGGT_SCENE_INPUT="${VGGT_INPUT_ROOT}/${VIDEO_NAME}"
 VGGT_OUTPUT_ROOT="${OUTPUTS_DIR}/vggt4d_outputs"
@@ -194,7 +202,7 @@ DAVIS_EVAL_SEQ_DIR="${DAVIS_EVAL_RESULTS_ROOT}/${VIDEO_NAME}"
 DAVIS_EVAL_SUBSET_ROOT="${OUTPUTS_DIR}/davis_eval_subset"
 DAVIS_CSV_PATH="${DAVIS_EVAL_RESULTS_ROOT}/global_results-val.csv"
 GT_MASK_DIR_FOR_METRICS="${GT_MASK_DIR}"
-PRED_FRAMES_DIR="${PROPAINTER_OUT_ROOT}/${VIDEO_NAME}/bmx-trees_sd_merged_frame/frames"
+PRED_FRAMES_DIR="${PROPAINTER_OUT_ROOT}/${PROPAINTER_VIDEO_SUBDIR}/frames"
 GT_FRAMES_DIR_FOR_METRICS="${GT_FRAMES_DIR}"
 
 mkdir -p "${OUTPUTS_DIR}"
@@ -203,7 +211,7 @@ if [[ "${MODE}" == "video" ]]; then
 	if [[ ! -d "${VIDEO_DIR}" ]]; then
 		echo "[1/10] Splitting input video into frames in conda env: ${PREPROCESS_ENV}"
 		cd "${ROOT_DIR}"
-		conda run -n "${PREPROCESS_ENV}" python "${ROOT_DIR}/pipeline_yolosam2/sam2_preprocess.py" \
+		conda run -n "${PREPROCESS_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/sam2_preprocess.py" \
 			--root_dir "${ROOT_DIR}" \
 			--video "${VIDEO_PATH}"
 	fi
@@ -214,27 +222,35 @@ rm -rf "${VGGT_INPUT_ROOT}"
 mkdir -p "${VGGT_INPUT_ROOT}"
 ln -s "${VIDEO_DIR}" "${VGGT_SCENE_INPUT}"
 
-echo "[3/10] Running VGGT4D dynamic mask extraction (first 20 frames) in conda env: ${VGGT_ENV}"
+echo "[3/10] Running VGGT4D dynamic mask extraction in conda env: ${VGGT_ENV}"
 cd "${ROOT_DIR}"
 
 FRAME_LIST=( $(find "${VIDEO_DIR}" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.jpeg' -o -name '*.png' \) | sort) )
-N_FRAMES="${#FRAME_LIST[@]}"
-if [[ "${N_FRAMES}" -eq 0 ]]; then
+TOTAL_FRAMES="${#FRAME_LIST[@]}"
+if [[ "${TOTAL_FRAMES}" -eq 0 ]]; then
 	echo "ERROR: no frames found in ${VIDEO_DIR}"
 	exit 1
 fi
 
+VGGT_CHUNK_SIZE="${VGGT_CHUNK_SIZE:-20}"
+VGGT_THRESHOLD_SCALE="${VGGT_THRESHOLD_SCALE:-0.7}"
 VGGT_MAX_FRAMES="${VGGT_MAX_FRAMES:-20}"
-if [[ "${N_FRAMES}" -gt "${VGGT_MAX_FRAMES}" ]]; then
+VMF_LC="$(printf '%s' "${VGGT_MAX_FRAMES}" | tr '[:upper:]' '[:lower:]')"
+if [[ "${VMF_LC}" == "all" ]] || [[ "${VGGT_MAX_FRAMES}" == "0" ]]; then
+	N_FRAMES="${TOTAL_FRAMES}"
+	echo "INFO: VGGT init mask will merge dynamic masks from all ${N_FRAMES} frames (vggt_max_frames=all)."
+elif [[ "${TOTAL_FRAMES}" -gt "${VGGT_MAX_FRAMES}" ]]; then
 	N_FRAMES="${VGGT_MAX_FRAMES}"
-	FRAME_LIST=("${FRAME_LIST[@]:0:${VGGT_MAX_FRAMES}}")
+	FRAME_LIST=("${FRAME_LIST[@]:0:${N_FRAMES}}")
+	echo "INFO: VGGT init uses first ${N_FRAMES} of ${TOTAL_FRAMES} frames (cap vggt_max_frames=${VGGT_MAX_FRAMES})."
+else
+	N_FRAMES="${TOTAL_FRAMES}"
+	echo "INFO: VGGT init uses all ${N_FRAMES} frames (sequence shorter than vggt_max_frames=${VGGT_MAX_FRAMES})."
 fi
 
 rm -rf "${VGGT_OUTPUT_ROOT}" "${OUTPUTS_DIR}/vggt_chunks"
 mkdir -p "${VGGT_SCENE_OUTPUT}"
 
-VGGT_CHUNK_SIZE="${VGGT_CHUNK_SIZE:-20}"
-VGGT_THRESHOLD_SCALE="${VGGT_THRESHOLD_SCALE:-0.7}"
 START=0
 while [[ "${START}" -lt "${N_FRAMES}" ]]; do
 	END=$((START + VGGT_CHUNK_SIZE))
@@ -301,7 +317,7 @@ rm -rf "${TMP_INPUT_MASK_DIR}"
 mkdir -p "${TMP_INPUT_MASK_DIR}/${VIDEO_NAME}"
 INIT_MASK_DIR="${TMP_INPUT_MASK_DIR}/${VIDEO_NAME}"
 cd "${ROOT_DIR}"
-conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/gen_first_mask_from_vggt.py" \
+conda run -n "${VGGT_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/gen_first_mask_from_vggt.py" \
 	--vggt_scene_output "${VGGT_SCENE_OUTPUT}" \
 	--output_dir "${INIT_MASK_DIR}" \
 	--threshold 0 \
@@ -318,7 +334,7 @@ printf "%s\n" "${VIDEO_NAME}" > "${VIDEO_LIST_FILE}"
 rm -rf "${TMP_RAW_MASK_DIR}"
 mkdir -p "${TMP_RAW_MASK_DIR}"
 cd "${ROOT_DIR}"
-conda run -n "${SAM3_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/sam3_vos_inference.py" \
+conda run -n "${SAM3_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/sam3_vos_inference.py" \
 	--sam3_checkpoint "${SAM3_CHECKPOINT}" \
 	--base_video_dir "${SAM3_BASE_VIDEO_DIR}" \
 	--input_mask_dir "${TMP_INPUT_MASK_DIR}" \
@@ -333,7 +349,7 @@ if [[ ! -d "${RAW_SEQ_DIR}" ]]; then
 fi
 
 echo "[6/10] Converting SAM3 masks and rendering demos"
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/postprocess_sam3.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/postprocess_sam3.py" \
 	--raw_mask_dir "${RAW_SEQ_DIR}" \
 	--new_mask_dir "${NEW_MASK_DIR}" \
 	--frame_dir "${VIDEO_DIR}" \
@@ -370,7 +386,7 @@ SD_CONTROLNET_DEPTH="${SD_CONTROLNET_DEPTH:-lllyasviel/sd-controlnet-depth}"
 rm -rf "${SD_KEYFRAME_DIR}" "${SD_MERGED_FRAMES_DIR}"
 mkdir -p "${SD_KEYFRAME_DIR}" "${SD_MERGED_FRAMES_DIR}"
 
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3sd/sd_keyframe_inpaint.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3sd/sd_keyframe_inpaint.py" \
 	--frame_dir "${VIDEO_DIR}" \
 	--mask_dir "${NEW_MASK_DIR}" \
 	--output_keyframe_dir "${SD_KEYFRAME_DIR}" \
@@ -420,7 +436,7 @@ conda run -n "${PROPAINTER_ENV}" python inference_propainter.py \
 
 echo "[9/10] Exporting inpaint samples"
 cd "${ROOT_DIR}"
-conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/postprocess_sam3.py" \
+conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/postprocess_sam3.py" \
 	--raw_mask_dir "${RAW_SEQ_DIR}" \
 	--new_mask_dir "${NEW_MASK_DIR}" \
 	--frame_dir "${VIDEO_DIR}" \
@@ -451,7 +467,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 		exit 1
 	fi
 
-	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipeline_vggt4dsam3/prepare_davis_eval_masks.py" \
+	conda run -n "${PROPAINTER_ENV}" python "${ROOT_DIR}/pipelines/vggt4dsam3/prepare_davis_eval_masks.py" \
 		--src_dir "${EVAL_MASK_SRC_DIR}" \
 		--dst_dir "${DAVIS_EVAL_SEQ_DIR}" \
 		--max_eval_labels 20 \
@@ -491,7 +507,7 @@ if [[ "${MODE}" == "davis" && "${EVAL_DAVIS}" == "1" ]]; then
 	printf "%s\n" "${VIDEO_NAME}" > "${DAVIS_EVAL_SUBSET_ROOT}/ImageSets/2017/val.txt"
 	GT_MASK_DIR_FOR_METRICS="${GT_SEQ_DIR}"
 
-	cd "${ROOT_DIR}/davis2017-evaluation"
+	cd "${ROOT_DIR}/external/davis2017-evaluation"
 	conda run -n "${DAVIS_ENV}" python evaluation_method.py \
 		--task "${DAVIS_TASK}" \
 		--set val \

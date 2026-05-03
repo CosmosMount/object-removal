@@ -3,9 +3,9 @@
 # Comparison script for all pipelines
 
 # Define common variables
-DAVIS_INPUT_ROOT="/home/xyz/Desktop/yzhang/object-removal/DAVIS"
-DAVIS_GT_ROOT="/home/xyz/Desktop/yzhang/object-removal/DAVIS"
 ROOT_DIR="/home/xyz/Desktop/yzhang/object-removal"
+DAVIS_INPUT_ROOT="${ROOT_DIR}/data/DAVIS"
+DAVIS_GT_ROOT="${ROOT_DIR}/data/DAVIS"
 OUTPUTS_DIR="${ROOT_DIR}/outputs"
 PROPAINTER_ENV="propainter"
 VGGT_THRESHOLD_SCALE="${VGGT_THRESHOLD_SCALE:-1.0}"
@@ -60,7 +60,7 @@ while [[ $# -gt 0 ]]; do
 			echo "Unknown argument: $1"
 			echo "Usage:"
 			echo "  Video mode: $0 --video /path/to/video.mp4"
-			echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
+			echo "  DAVIS mode: $0 --davis_seq bmx-trees [--davis_input_root ${ROOT_DIR}/data/DAVIS] [--eval_davis 1|0] [--davis_gt_root /path/to/DAVIS] [--davis_task semi-supervised|unsupervised]"
 			exit 1
 			;;
 	esac
@@ -71,8 +71,9 @@ BASELINE_GT_MASK="${DAVIS_GT_ROOT}/Annotations_unsupervised/480p/${DAVIS_SEQ}"
 if [[ ! -d "$BASELINE_GT_MASK" ]]; then
 	BASELINE_GT_MASK="${DAVIS_GT_ROOT}/Annotations/480p/${DAVIS_SEQ}"
 fi
+
 conda run -n sam2 python baseline/baseline.py \
-	--video DAVIS/JPEGImages/480p/$DAVIS_SEQ \
+	--video "${DAVIS_INPUT_ROOT}/JPEGImages/480p/${DAVIS_SEQ}" \
 	--output outputs/baseline/$DAVIS_SEQ \
 	--gt_mask_dir "$BASELINE_GT_MASK" \
 	--gt_frames_dir "${DAVIS_INPUT_ROOT}/JPEGImages/480p/${DAVIS_SEQ}"

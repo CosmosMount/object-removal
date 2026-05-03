@@ -4,4 +4,5 @@ outputs/
 *__pycache__/
 inputs/
 *.pt
-DAVIS/external/DiffuEraser/weights/
+DAVIS/
+external/DiffuEraser/weights/

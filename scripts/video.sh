@@ -13,7 +13,7 @@ fi
 FOLDER_NAME=$1
 
 # Define the input and output paths
-INPUT_PATH="DAVIS/JPEGImages/480p/$FOLDER_NAME"
+INPUT_PATH="data/DAVIS/JPEGImages/480p/$FOLDER_NAME"
 OUTPUT_VIDEO="outputs/origins/$FOLDER_NAME.mp4"
 
 # Check if the input folder exists

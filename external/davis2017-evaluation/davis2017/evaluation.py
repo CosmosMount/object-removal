@@ -144,10 +144,22 @@ class DAVISEvaluation(object):
                 j_metrics_res = np.zeros((1, all_gt_masks.shape[1]))
                 f_metrics_res = np.zeros((1, all_gt_masks.shape[1]))
                 for ii in range(all_gt_masks.shape[1]):  # Iterate over frames
+                    void_frame = None
+                    if all_void_masks is not None:
+                        # void mask is (T, H, W); per-frame GT/seg are (H, W)
+                        void_frame = (
+                            all_void_masks[ii, ...]
+                            if all_void_masks.ndim == 3
+                            else all_void_masks
+                        )
                     if 'J' in metric:
-                        j_metrics_res[0, ii] = db_eval_iou(all_gt_masks[0, ii, ...], all_res_masks[0, ii, ...], all_void_masks)
+                        j_metrics_res[0, ii] = db_eval_iou(
+                            all_gt_masks[0, ii, ...], all_res_masks[0, ii, ...], void_frame
+                        )
                     if 'F' in metric:
-                        f_metrics_res[0, ii] = db_eval_boundary(all_gt_masks[0, ii, ...], all_res_masks[0, ii, ...], all_void_masks)
+                        f_metrics_res[0, ii] = db_eval_boundary(
+                            all_gt_masks[0, ii, ...], all_res_masks[0, ii, ...], void_frame
+                        )
             else:
                 # Original evaluation with Hungarian matching
                 if self.task == 'unsupervised':
